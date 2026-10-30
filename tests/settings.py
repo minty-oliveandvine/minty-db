@@ -6,7 +6,7 @@ file instead, and the same tests run against the real schema.
 """
 
 import os
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 SECRET_KEY = "minty-db-tests"
 USE_TZ = True
@@ -20,8 +20,8 @@ if _pg:
         "default": {
             "ENGINE": "django.db.backends.postgresql",
             "NAME": "replaced-by-the-harness",
-            "USER": _u.username,
-            "PASSWORD": _u.password,
+            "USER": unquote(_u.username or ""),
+            "PASSWORD": unquote(_u.password or ""),
             "HOST": _u.hostname,
             "PORT": _u.port or 5432,
             "OPTIONS": {"options": f"-c search_path={_schema}"},

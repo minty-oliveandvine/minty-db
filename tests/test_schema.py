@@ -116,3 +116,21 @@ def test_migrate_builds_a_fresh_database_and_baselines_an_existing_one():
     finally:
         pg.drop_database(fresh)
         pg.drop_database(existing)
+
+
+def test_the_database_url_is_decoded_and_keeps_its_sslmode():
+    """A Supabase URI percent-encodes its password and sets sslmode; the command must pass both on."""
+    from minty_db.__main__ import _settings_for
+
+    name, db = _settings_for(
+        "postgresql://postgres:p%40ss%2Fw0rd@db.example.co:5432/postgres?schema=development&sslmode=require"
+    )
+    assert name == "development"
+    assert (db["USER"], db["PASSWORD"], db["HOST"], db["PORT"], db["NAME"]) == (
+        "postgres",
+        "p@ss/w0rd",
+        "db.example.co",
+        5432,
+        "postgres",
+    )
+    assert db["OPTIONS"] == {"options": "-c search_path=development", "sslmode": "require"}

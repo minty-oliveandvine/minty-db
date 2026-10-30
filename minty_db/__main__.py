@@ -14,39 +14,43 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from minty_db import DEFAULT_SCHEMA
 
 
-def _configure() -> str:
-    url = os.environ.get("DATABASE_URL", "")
+def _settings_for(url: str) -> tuple[str, dict]:
+    """The schema and Django's database settings for ``url``. A URI percent-encodes its user and
+    password (Supabase's does), so both are decoded; its ``sslmode`` is kept."""
     if not url.startswith(("postgres://", "postgresql://")):
         raise SystemExit("DATABASE_URL must be a postgresql:// URI")
     u = urlsplit(url)
-    schema = (parse_qs(u.query).get("schema") or [os.environ.get("MINTY_DB_SCHEMA", DEFAULT_SCHEMA)])[0]
+    query = parse_qs(u.query)
+    schema = (query.get("schema") or [os.environ.get("MINTY_DB_SCHEMA", DEFAULT_SCHEMA)])[0]
     if not schema.replace("_", "").isalnum() or not schema.islower():
         raise SystemExit(f"refusing schema name {schema!r}")
+    options = {"options": f"-c search_path={schema}"}
+    if query.get("sslmode"):
+        options["sslmode"] = query["sslmode"][0]
+    return schema, {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": u.path.lstrip("/"),
+        "USER": unquote(u.username or ""),
+        "PASSWORD": unquote(u.password or ""),
+        "HOST": u.hostname,
+        "PORT": u.port or 5432,
+        "OPTIONS": options,
+    }
+
+
+def _configure() -> str:
+    schema, database = _settings_for(os.environ.get("DATABASE_URL", ""))
     os.environ["MINTY_DB_SCHEMA"] = schema
 
     import django
     from django.conf import settings
 
-    settings.configure(
-        INSTALLED_APPS=["minty_db"],
-        USE_TZ=True,
-        DATABASES={
-            "default": {
-                "ENGINE": "django.db.backends.postgresql",
-                "NAME": u.path.lstrip("/"),
-                "USER": u.username,
-                "PASSWORD": u.password,
-                "HOST": u.hostname,
-                "PORT": u.port or 5432,
-                "OPTIONS": {"options": f"-c search_path={schema}"},
-            }
-        },
-    )
+    settings.configure(INSTALLED_APPS=["minty_db"], USE_TZ=True, DATABASES={"default": database})
     django.setup()
     return schema
 
