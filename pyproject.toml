@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minty-db"
+version = "0.1.0"
+description = "The Minty schema (pettycashv3): every table's Django model, the migrations, and the test-database builder."
+requires-python = ">=3.13"
+# Django only: each service brings its own Postgres driver (psycopg 3 or psycopg2), and the
+# test builder uses whichever is installed.
+dependencies = ["django>=5.2,<6.0"]
+
+[project.optional-dependencies]
+# minty_db.testing.pg as a pytest plugin.
+testing = ["pytest>=8", "pytest-django>=4.8"]
+dev = [
+  "minty-db[testing]",
+  "psycopg[binary]>=3.2,<4.0",
+  "ruff>=0.6",
+]
+# No pyright: Django ships no type stubs, so it flags every manager and _meta access (the
+# Django APIs run ruff only, for the same reason).
+
+[tool.setuptools.packages.find]
+include = ["minty_db*"]
+
+[tool.setuptools.package-data]
+minty_db = ["schema/*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+DJANGO_SETTINGS_MODULE = "tests.settings"
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+# Generated from the schema file by scripts/generate_models.py (its --check is their gate).
+extend-exclude = ["minty_db/models.py", "minty_db/enums.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# makemigrations output: long field lines are its shape, not style.
+"minty_db/migrations/*.py" = ["E501"]
+
