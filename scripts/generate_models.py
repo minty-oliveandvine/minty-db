@@ -45,6 +45,43 @@ VIEW_KEYS = {"entity_setup_summary": "entity_id", "report_cash_summary": "report
 # numeric without precision (a view's computed totals): read as money.
 UNBOUNDED_NUMERIC = "max_digits=14, decimal_places=2"
 
+# Reverse names an API's code uses (``user.billing_groups``), by (table, column). Every other
+# relation has none (``related_name="+"``). Added as each API switches to minty-db; a name here
+# is a promise to that API, so keep it.
+RELATED_NAMES = {
+    # minty-subscription-api (2026-10-30)
+    ("payer_billing_group", "payer_user_id"): "billing_groups",
+    ("billing_account_payment_method", "billing_group_id"): "payment_methods",
+    ("entity_billing_group", "entity_id"): "billing_groups",
+    ("entity_billing_group", "billing_group_id"): "entities",
+    ("entity_billing_consent", "entity_id"): "billing_consents",
+    ("entity_billing_consent", "user_id"): "billing_consents",
+    ("entity_module_subscription", "entity_id"): "module_subscriptions",
+    ("entity_module_subscription", "payer_user_id"): "paid_subscriptions",
+    ("user_stripe_customer", "user_id"): "stripe_customer",
+    ("subscription_invoice", "payer_user_id"): "subscription_invoices",
+    ("subscription_invoice", "billing_group_id"): "invoices",
+    ("subscription_invoice_line", "invoice_id"): "lines",
+    ("subscription_transfer", "entity_id"): "subscription_transfers",
+    ("subscription_transfer", "from_user_id"): "transfers_offered",
+    ("subscription_transfer", "to_user_id"): "transfers_received",
+    ("subscription_audit_log", "entity_id"): "subscription_audit",
+    ("subscription_email_log", "user_id"): "subscription_emails",
+}
+
+# A partial unique index needs its condition as a Q. Keyed by index name, with the predicate
+# Postgres reports: if it changes (or a new partial index appears), the generator stops.
+PARTIAL_UNIQUE = {
+    "uq_bapm_one_default": ("is_default", "models.Q(is_default=True)"),
+    "idx_st_entity_open": (
+        "(status = ANY (ARRAY['pending'::transfer_status, 'charging'::transfer_status, 'charged'::transfer_status]))",
+        'models.Q(status__in=["pending", "charging", "charged"])',
+    ),
+}
+
+# Default ordering an API relies on (``invoice.lines.all()`` in creation order).
+ORDERING = {"subscription_invoice_line": ("created_at",)}
+
 
 def camel(name: str) -> str:
     return CLASS_NAMES.get(name) or "".join(p.capitalize() for p in name.split("_"))
@@ -80,6 +117,12 @@ def read_catalog(conn) -> dict:
         "enums": q("""select t.typname, array_agg(e.enumlabel order by e.enumsortorder) from pg_type t
             join pg_enum e on e.enumtypid = t.oid join pg_namespace n on n.oid = t.typnamespace
             where n.nspname = %(s)s group by t.typname order by t.typname"""),
+        "unique": q("""select t.relname, i.relname,
+            array(select a.attname from unnest(ix.indkey) k join pg_attribute a on a.attrelid = t.oid and a.attnum = k),
+            pg_get_expr(ix.indpred, ix.indrelid), ix.indexprs is not null
+            from pg_index ix join pg_class i on i.oid = ix.indexrelid join pg_class t on t.oid = ix.indrelid
+            join pg_namespace n on n.oid = t.relnamespace
+            where n.nspname = %(s)s and ix.indisunique and not ix.indisprimary order by t.relname, i.relname"""),
         "tables": q("""select c.relname, obj_description(c.oid)
             from pg_class c join pg_namespace n on n.oid = c.relnamespace
             where n.nspname = %(s)s and c.relkind in ('r', 'v') order by c.relname"""),
@@ -107,18 +150,20 @@ def default_kwarg(raw: str | None, data_type: str) -> str | None:
     raise SystemExit(f"unrecognised default {raw!r} - teach default_kwarg() about it")
 
 
-def field_line(col, table_pk, fks, enums_len, view_key) -> tuple[str, str]:
+def field_line(col, table_pk, fks, enums_len, view_key, unique_cols=frozenset()) -> tuple[str, str]:
     (table, column, data_type, udt, char_len, num_p, num_s, nullable, default, is_view, _comment) = col
     name = pyname(column)
     kw: list[str] = []
     single_pk = table_pk == [column]
+    unique = column in unique_cols
 
     fk = fks.get((table, column))
     if fk and column.endswith("_id") and column != "id":
         target_table, target_col, rule = fk
-        cls = "models.OneToOneField" if single_pk else "models.ForeignKey"
+        cls = "models.OneToOneField" if single_pk or unique else "models.ForeignKey"
         on_delete = {"c": "models.CASCADE", "n": "models.SET_NULL"}.get(rule, "models.DO_NOTHING")
-        kw = [repr(camel(target_table)), on_delete, "db_constraint=False", 'related_name="+"']
+        related = RELATED_NAMES.get((table, column), "+")
+        kw = [repr(camel(target_table)), on_delete, "db_constraint=False", f"related_name={related!r}"]
         if target_col != "id":
             kw.append(f"to_field={target_col!r}")
         if single_pk:
@@ -162,6 +207,8 @@ def field_line(col, table_pk, fks, enums_len, view_key) -> tuple[str, str]:
 
     if single_pk or view_key == column:
         kw.append("primary_key=True")
+    if unique and not single_pk:
+        kw.append("unique=True")
     if name != column:
         kw.append(f"db_column={column!r}")
     dk = default_kwarg(default, data_type) if not is_view else None
@@ -184,6 +231,25 @@ def render(cat: dict) -> tuple[str, str]:
     columns: dict[str, list] = defaultdict(list)
     for col in cat["columns"]:
         columns[col[0]].append(col)
+    # Unique rules: one column -> the field (unique=True, or a OneToOneField for a key);
+    # several columns or a condition -> Meta.constraints.
+    unique_cols: dict[str, set] = defaultdict(set)
+    constraints: dict[str, list] = defaultdict(list)
+    for table, index, cols, pred, is_expr in cat["unique"]:
+        if is_expr:
+            raise SystemExit(f"{table}.{index} is an expression index - teach the generator about it")
+        if pred is not None:
+            if index not in PARTIAL_UNIQUE or PARTIAL_UNIQUE[index][0] != pred:
+                raise SystemExit(f"partial unique {table}.{index} WHERE {pred} - add it to PARTIAL_UNIQUE")
+            constraints[table].append((index, cols, PARTIAL_UNIQUE[index][1]))
+        elif len(cols) == 1:
+            unique_cols[table].add(cols[0])
+        else:
+            constraints[table].append((index, cols, None))
+    for name in set(PARTIAL_UNIQUE) - {i for _, i, _, p, _ in cat["unique"] if p is not None}:
+        raise SystemExit(f"PARTIAL_UNIQUE names {name}, which the schema no longer has")
+    for key in set(RELATED_NAMES) - set(fks):
+        raise SystemExit(f"RELATED_NAMES names {key}, which is not a foreign key")
 
     out = [
         '"""Every table and view in the Minty schema, generated by scripts/generate_models.py from',
@@ -213,7 +279,9 @@ def render(cat: dict) -> tuple[str, str]:
             if base == "UpdatedAtMixin" and col[1] == "updated_at":
                 names[col[1]] = "updated_at"
                 continue
-            name, line = field_line(col, pk, fks, enums_len, VIEW_KEYS.get(table) if is_view else None)
+            name, line = field_line(
+                col, pk, fks, enums_len, VIEW_KEYS.get(table) if is_view else None, frozenset(unique_cols[table])
+            )
             names[col[1]] = name
             out.append(f"    {name} = {line}")
         if len(pk) > 1:
@@ -222,6 +290,15 @@ def render(cat: dict) -> tuple[str, str]:
         if is_view:
             out.append("        managed = False")
         out.append(f"        db_table = {table!r}")
+        if table in ORDERING:
+            out.append(f"        ordering = {ORDERING[table]!r}")
+        if constraints[table]:
+            out.append("        constraints = [")
+            for index, cols, condition in constraints[table]:
+                fields = ", ".join(repr(names[c]) for c in cols)
+                cond = f", condition={condition}" if condition else ""
+                out.append(f"            models.UniqueConstraint(fields=[{fields}]{cond}, name={index!r}),")
+            out.append("        ]")
 
     enum_out = [
         '"""The schema\'s enum types as Django choices, generated by scripts/generate_models.py."""',

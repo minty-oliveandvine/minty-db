@@ -14,7 +14,7 @@ from minty_db.fields import CharNField, PgEnumField, UpdatedAtMixin
 
 class AccountInfo(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+')
     type = models.CharField(max_length=50)
     name = models.CharField(max_length=80)
     xero_account_id = models.CharField(max_length=36, null=True, blank=True)
@@ -28,6 +28,9 @@ class AccountInfo(UpdatedAtMixin):
 
     class Meta:
         db_table = 'account_info'
+        constraints = [
+            models.UniqueConstraint(fields=['entity', 'xero_account_id'], name='uq_account_entity_xero'),
+        ]
 
 
 class Attachment(UpdatedAtMixin):
@@ -74,8 +77,8 @@ class Bill(UpdatedAtMixin):
 
 class BillAttachment(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    bill = models.ForeignKey('Bill', models.CASCADE, db_constraint=False, related_name="+")
-    attachment = models.ForeignKey('Attachment', models.CASCADE, db_constraint=False, related_name="+")
+    bill = models.ForeignKey('Bill', models.CASCADE, db_constraint=False, related_name='+')
+    attachment = models.ForeignKey('Attachment', models.CASCADE, db_constraint=False, related_name='+')
     attachment_role = PgEnumField('bill_attachment_role', max_length=19, db_default='other')
     sort_order = models.IntegerField(db_default=0)
     note = models.TextField(db_default='')
@@ -90,7 +93,7 @@ class BillAttachment(UpdatedAtMixin):
 
 class BillAudit(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    bill = models.ForeignKey('Bill', models.CASCADE, db_constraint=False, related_name="+")
+    bill = models.ForeignKey('Bill', models.CASCADE, db_constraint=False, related_name='+')
     user_id = models.UUIDField(null=True, blank=True)
     action = models.CharField(max_length=100)
     detail = models.TextField()
@@ -102,7 +105,7 @@ class BillAudit(models.Model):
 
 class BillLine(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    bill = models.ForeignKey('Bill', models.CASCADE, db_constraint=False, related_name="+")
+    bill = models.ForeignKey('Bill', models.CASCADE, db_constraint=False, related_name='+')
     description = models.TextField()
     quantity = models.DecimalField(max_digits=12, decimal_places=4, db_default=Decimal("1"))
     unit_amount = models.DecimalField(max_digits=14, decimal_places=2, db_default=Decimal("0"))
@@ -120,18 +123,22 @@ class BillLine(UpdatedAtMixin):
 
 class BillingAccountPaymentMethod(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    billing_group = models.ForeignKey('PayerBillingGroup', models.CASCADE, db_constraint=False, related_name="+")
+    billing_group = models.ForeignKey('PayerBillingGroup', models.CASCADE, db_constraint=False, related_name='payment_methods')
     stripe_payment_method_id = models.CharField(max_length=255)
     is_default = models.BooleanField(db_default=False)
     created_at = models.DateTimeField(db_default=Now())
 
     class Meta:
         db_table = 'billing_account_payment_method'
+        constraints = [
+            models.UniqueConstraint(fields=['billing_group', 'stripe_payment_method_id'], name='uq_bapm_group_card'),
+            models.UniqueConstraint(fields=['billing_group'], condition=models.Q(is_default=True), name='uq_bapm_one_default'),
+        ]
 
 
 class BillingPlan(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    code = models.CharField(max_length=100)
+    code = models.CharField(max_length=100, unique=True)
     display_name = models.CharField(max_length=255)
     amount = models.IntegerField()
     currency = CharNField(max_length=3)
@@ -157,7 +164,7 @@ class BillingPolicy(UpdatedAtMixin):
 
 class CashInfo(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    currency = models.ForeignKey('CurrencyInfo', models.DO_NOTHING, db_constraint=False, related_name="+")
+    currency = models.ForeignKey('CurrencyInfo', models.DO_NOTHING, db_constraint=False, related_name='+')
     type = PgEnumField('cash_type', max_length=4, null=True, blank=True)
     cash_value = models.DecimalField(max_digits=12, decimal_places=2)
     cash_name = models.CharField(max_length=20, null=True, blank=True)
@@ -167,13 +174,16 @@ class CashInfo(models.Model):
 
     class Meta:
         db_table = 'cash_info'
+        constraints = [
+            models.UniqueConstraint(fields=['currency', 'cash_value'], name='cash_info_currency_value_key'),
+        ]
 
 
 class CountryInfo(models.Model):
     country_code = CharNField(max_length=2, primary_key=True)
     alpha3_code = CharNField(max_length=3, null=True, blank=True)
     country_name_en = models.CharField(max_length=100)
-    currency = models.ForeignKey('CurrencyInfo', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
+    currency = models.ForeignKey('CurrencyInfo', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
     phone_code = models.CharField(max_length=10, null=True, blank=True)
     is_active = models.BooleanField(db_default=True)
     display_order = models.IntegerField(db_default=999)
@@ -184,7 +194,7 @@ class CountryInfo(models.Model):
 
 class CurrencyInfo(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    currency_code = CharNField(max_length=3)
+    currency_code = CharNField(max_length=3, unique=True)
     currency_name = models.CharField(max_length=100)
     symbol = models.CharField(max_length=10, db_default='')
     decimal_places = models.SmallIntegerField(db_default=2)
@@ -211,7 +221,7 @@ class EmailOtp(models.Model):
 class Entity(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     country_code = CharNField(max_length=2, null=True, blank=True)
-    currency = models.ForeignKey('CurrencyInfo', models.DO_NOTHING, db_constraint=False, related_name="+", null=True, blank=True)
+    currency = models.ForeignKey('CurrencyInfo', models.DO_NOTHING, db_constraint=False, related_name='+', null=True, blank=True)
     name = models.CharField(max_length=100)
     status = PgEnumField('entity_status', max_length=12, db_default='onboarding')
     contact_phone = models.CharField(max_length=36, null=True, blank=True)
@@ -223,11 +233,11 @@ class Entity(UpdatedAtMixin):
     xero_tenant_name = models.CharField(max_length=255, null=True, blank=True)
     financial_year_end_day = models.SmallIntegerField(null=True, blank=True)
     financial_year_end_month = models.SmallIntegerField(null=True, blank=True)
-    connected_by_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name="+", null=True, blank=True)
+    connected_by_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name='+', null=True, blank=True)
     onboarding_saved_step = models.IntegerField(db_default=9, null=True, blank=True)
     last_connected_at = models.DateTimeField(null=True, blank=True)
     last_accessed_at = models.DateTimeField(null=True, blank=True)
-    last_accessed_by_user = models.ForeignKey('User', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
+    last_accessed_by_user = models.ForeignKey('User', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
 
     class Meta:
@@ -236,7 +246,7 @@ class Entity(UpdatedAtMixin):
 
 class EntityAccountXero(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    account = models.ForeignKey('AccountInfo', models.CASCADE, db_constraint=False, related_name="+")
+    account = models.ForeignKey('AccountInfo', models.CASCADE, db_constraint=False, related_name='+')
     type = models.CharField(max_length=50, null=True, blank=True)
     xero_org_id = models.CharField(max_length=36, null=True, blank=True)
     xero_account_id = models.CharField(max_length=36, null=True, blank=True)
@@ -277,34 +287,43 @@ class EntityBillCurrency(UpdatedAtMixin):
 
     class Meta:
         db_table = 'entity_bill_currency'
+        constraints = [
+            models.UniqueConstraint(fields=['entity_id', 'currency_id'], name='uq_ebc_entity_currency'),
+        ]
 
 
 class EntityBillingConsent(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
-    user = models.ForeignKey('User', models.CASCADE, db_constraint=False, related_name="+")
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='billing_consents')
+    user = models.ForeignKey('User', models.CASCADE, db_constraint=False, related_name='billing_consents')
     source = models.CharField(max_length=20)
     created_at = models.DateTimeField(db_default=Now())
 
     class Meta:
         db_table = 'entity_billing_consent'
+        constraints = [
+            models.UniqueConstraint(fields=['entity', 'user'], name='uq_entity_billing_consent_entity_user'),
+        ]
 
 
 class EntityBillingGroup(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
-    payer_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name="+")
-    billing_group = models.ForeignKey('PayerBillingGroup', models.DO_NOTHING, db_constraint=False, related_name="+")
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='billing_groups')
+    payer_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name='+')
+    billing_group = models.ForeignKey('PayerBillingGroup', models.DO_NOTHING, db_constraint=False, related_name='entities')
     source = models.CharField(max_length=20)
     created_at = models.DateTimeField(db_default=Now())
 
     class Meta:
         db_table = 'entity_billing_group'
+        constraints = [
+            models.UniqueConstraint(fields=['entity', 'payer_user'], name='uq_entity_billing_group_entity_payer'),
+        ]
 
 
 class EntityCashDetail(models.Model):
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
-    cash = models.ForeignKey('CashInfo', models.DO_NOTHING, db_constraint=False, related_name="+")
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+')
+    cash = models.ForeignKey('CashInfo', models.DO_NOTHING, db_constraint=False, related_name='+')
     cash_type = PgEnumField('cash_type', max_length=4, null=True, blank=True)
     cash_instock = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     description = models.TextField(null=True, blank=True)
@@ -315,8 +334,8 @@ class EntityCashDetail(models.Model):
 
 
 class EntityCashSetting(UpdatedAtMixin):
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
-    cash = models.ForeignKey('CashInfo', models.CASCADE, db_constraint=False, related_name="+")
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+')
+    cash = models.ForeignKey('CashInfo', models.CASCADE, db_constraint=False, related_name='+')
     is_active = models.BooleanField(db_default=True)
     display_order = models.IntegerField(null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
@@ -328,7 +347,7 @@ class EntityCashSetting(UpdatedAtMixin):
 
 class EntityFunction(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    function_code = PgEnumField('module_code', max_length=15)
+    function_code = PgEnumField('module_code', max_length=15, unique=True)
     function_name = models.CharField(max_length=150)
     description = models.TextField(db_default='')
     is_active = models.BooleanField(db_default=True)
@@ -340,8 +359,8 @@ class EntityFunction(UpdatedAtMixin):
 
 
 class EntityFunctionMap(UpdatedAtMixin):
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
-    entity_function = models.ForeignKey('EntityFunction', models.DO_NOTHING, db_constraint=False, related_name="+")
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+')
+    entity_function = models.ForeignKey('EntityFunction', models.DO_NOTHING, db_constraint=False, related_name='+')
     is_enabled = models.BooleanField(db_default=True)
     settings_json = models.JSONField(null=True, blank=True)
     enabled_at = models.DateTimeField(null=True, blank=True)
@@ -356,9 +375,9 @@ class EntityFunctionMap(UpdatedAtMixin):
 
 class EntityModuleSubscription(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='module_subscriptions')
     function_code = PgEnumField('module_code', max_length=15)
-    payer_user = models.ForeignKey('User', models.CASCADE, db_constraint=False, related_name="+", null=True, blank=True)
+    payer_user = models.ForeignKey('User', models.CASCADE, db_constraint=False, related_name='paid_subscriptions', null=True, blank=True)
     phase = PgEnumField('subscription_phase', max_length=16)
     app_access_until = models.DateTimeField(null=True, blank=True)
     trial_end = models.DateTimeField(null=True, blank=True)
@@ -370,21 +389,24 @@ class EntityModuleSubscription(UpdatedAtMixin):
 
     class Meta:
         db_table = 'entity_module_subscription'
+        constraints = [
+            models.UniqueConstraint(fields=['entity', 'function_code'], name='uq_ems_entity_code'),
+        ]
 
 
 class EntityPettycashSettings(UpdatedAtMixin):
-    entity = models.OneToOneField('Entity', models.CASCADE, db_constraint=False, related_name="+", primary_key=True)
+    entity = models.OneToOneField('Entity', models.CASCADE, db_constraint=False, related_name='+', primary_key=True)
     opening_balance = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     start_date = models.DateField(null=True, blank=True)
-    pettycash_account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
-    bank_account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
-    cash_sale_account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
-    discrepancy_bank_account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
-    discrepancy_account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
-    director_account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
-    cash_sale_contact = models.ForeignKey('XeroContactSync', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
-    director_contact = models.ForeignKey('XeroContactSync', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
-    discrepancy_contact = models.ForeignKey('XeroContactSync', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
+    pettycash_account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
+    bank_account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
+    cash_sale_account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
+    discrepancy_bank_account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
+    discrepancy_account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
+    director_account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
+    cash_sale_contact = models.ForeignKey('XeroContactSync', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
+    director_contact = models.ForeignKey('XeroContactSync', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
+    discrepancy_contact = models.ForeignKey('XeroContactSync', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
 
     class Meta:
@@ -392,7 +414,7 @@ class EntityPettycashSettings(UpdatedAtMixin):
 
 
 class EntitySaleSetting(models.Model):
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+')
     sale_id = models.UUIDField()
     is_active = models.BooleanField(db_default=True)
     display_order = models.IntegerField(null=True, blank=True)
@@ -452,12 +474,12 @@ class EntitySetupSummary(models.Model):
 
 class Invitation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+')
     email = models.CharField(max_length=150)
     first_name = models.CharField(max_length=100, null=True, blank=True)
     last_name = models.CharField(max_length=100, null=True, blank=True)
     role = PgEnumField('entity_role', max_length=12)
-    token = models.CharField(max_length=64)
+    token = models.CharField(max_length=64, unique=True)
     status = PgEnumField('invitation_status', max_length=8, db_default='pending')
     invited_by = models.UUIDField(null=True, blank=True)
     accepted_at = models.DateTimeField(null=True, blank=True)
@@ -470,7 +492,7 @@ class Invitation(models.Model):
 
 class PayerBillingGroup(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    payer_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name="+")
+    payer_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name='billing_groups')
     stripe_payment_method_id = models.CharField(max_length=255)
     billing_email = models.CharField(max_length=255, null=True, blank=True)
     billing_company = models.CharField(max_length=255, null=True, blank=True)
@@ -485,7 +507,7 @@ class PayerBillingGroup(UpdatedAtMixin):
 
 class Payment(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    bill = models.ForeignKey('Bill', models.CASCADE, db_constraint=False, related_name="+")
+    bill = models.ForeignKey('Bill', models.CASCADE, db_constraint=False, related_name='+')
     payment_date = models.DateField(null=True, blank=True)
     amount = models.DecimalField(max_digits=14, decimal_places=2, db_default=Decimal("0"))
     currency_id = models.UUIDField(null=True, blank=True)
@@ -503,8 +525,8 @@ class Payment(UpdatedAtMixin):
 
 class PaymentAttachment(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    payment = models.ForeignKey('Payment', models.CASCADE, db_constraint=False, related_name="+")
-    attachment = models.ForeignKey('Attachment', models.CASCADE, db_constraint=False, related_name="+")
+    payment = models.ForeignKey('Payment', models.CASCADE, db_constraint=False, related_name='+')
+    attachment = models.ForeignKey('Attachment', models.CASCADE, db_constraint=False, related_name='+')
     attachment_role = PgEnumField('payment_attachment_role', max_length=16, db_default='other')
     sort_order = models.IntegerField(db_default=0)
     note = models.TextField(db_default='')
@@ -519,7 +541,7 @@ class PaymentAttachment(UpdatedAtMixin):
 
 class Permission(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    code = models.CharField(max_length=100)
+    code = models.CharField(max_length=100, unique=True)
     name = models.CharField(max_length=100)
     description = models.CharField(max_length=255, null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
@@ -530,7 +552,7 @@ class Permission(UpdatedAtMixin):
 
 class Report(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    entity = models.ForeignKey('Entity', models.DO_NOTHING, db_constraint=False, related_name="+")
+    entity = models.ForeignKey('Entity', models.DO_NOTHING, db_constraint=False, related_name='+')
     transaction_date = models.DateField()
     next_transaction_date = models.DateField(null=True, blank=True)
     status = PgEnumField('report_status', max_length=9, db_default='draft')
@@ -559,12 +581,15 @@ class Report(UpdatedAtMixin):
 
     class Meta:
         db_table = 'report'
+        constraints = [
+            models.UniqueConstraint(fields=['entity', 'transaction_date'], name='report_entity_date_key'),
+        ]
 
 
 class ReportCashCount(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name="+")
-    cash = models.ForeignKey('CashInfo', models.DO_NOTHING, db_constraint=False, related_name="+")
+    report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name='+')
+    cash = models.ForeignKey('CashInfo', models.DO_NOTHING, db_constraint=False, related_name='+')
     quantity = models.IntegerField(db_default=0)
     cash_value = models.DecimalField(max_digits=12, decimal_places=2)
     created_at = models.DateTimeField(db_default=Now())
@@ -572,6 +597,9 @@ class ReportCashCount(models.Model):
 
     class Meta:
         db_table = 'report_cash_count'
+        constraints = [
+            models.UniqueConstraint(fields=['report', 'cash'], name='report_cash_count_uq'),
+        ]
 
 
 class ReportCashSummary(models.Model):
@@ -588,9 +616,9 @@ class ReportCashSummary(models.Model):
 
 class ReportExpense(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name="+")
-    account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
-    contact = models.ForeignKey('XeroContactSync', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
+    report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name='+')
+    account = models.ForeignKey('AccountInfo', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
+    contact = models.ForeignKey('XeroContactSync', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
     item = models.CharField(max_length=150, null=True, blank=True)
     amount = models.DecimalField(max_digits=14, decimal_places=2, db_default=Decimal("0"))
     remarks = models.CharField(max_length=300, null=True, blank=True)
@@ -603,8 +631,8 @@ class ReportExpense(models.Model):
 
 class ReportExpenseAttachment(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    report_expense = models.ForeignKey('ReportExpense', models.CASCADE, db_constraint=False, related_name="+")
-    attachment = models.ForeignKey('Attachment', models.CASCADE, db_constraint=False, related_name="+")
+    report_expense = models.ForeignKey('ReportExpense', models.CASCADE, db_constraint=False, related_name='+')
+    attachment = models.ForeignKey('Attachment', models.CASCADE, db_constraint=False, related_name='+')
     attachment_role = PgEnumField('expense_attachment_role', max_length=7, db_default='receipt')
     sort_order = models.IntegerField(db_default=0)
     xero_attachment_id = models.CharField(max_length=36, db_default='')
@@ -612,12 +640,15 @@ class ReportExpenseAttachment(models.Model):
 
     class Meta:
         db_table = 'report_expense_attachment'
+        constraints = [
+            models.UniqueConstraint(fields=['report_expense', 'attachment'], name='uq_rea_expense_attachment'),
+        ]
 
 
 class ReportHistory(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name="+")
-    user = models.ForeignKey('User', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
+    report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name='+')
+    user = models.ForeignKey('User', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
     action = models.CharField(max_length=50)
     field_changed = models.CharField(max_length=255, null=True, blank=True)
     old_value = models.TextField(null=True, blank=True)
@@ -630,18 +661,21 @@ class ReportHistory(models.Model):
 
 class ReportSale(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name="+")
-    sale = models.ForeignKey('SaleInfo', models.DO_NOTHING, db_constraint=False, related_name="+")
+    report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name='+')
+    sale = models.ForeignKey('SaleInfo', models.DO_NOTHING, db_constraint=False, related_name='+')
     amount = models.DecimalField(max_digits=14, decimal_places=2, db_default=Decimal("0"))
     created_at = models.DateTimeField(db_default=Now())
 
     class Meta:
         db_table = 'report_sale'
+        constraints = [
+            models.UniqueConstraint(fields=['report', 'sale'], name='report_sale_uq'),
+        ]
 
 
 class Role(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    name = models.CharField(max_length=100)
+    name = models.CharField(max_length=100, unique=True)
     description = models.CharField(max_length=255, null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
 
@@ -650,8 +684,8 @@ class Role(UpdatedAtMixin):
 
 
 class RolePermission(models.Model):
-    role = models.ForeignKey('Role', models.CASCADE, db_constraint=False, related_name="+")
-    permission = models.ForeignKey('Permission', models.CASCADE, db_constraint=False, related_name="+")
+    role = models.ForeignKey('Role', models.CASCADE, db_constraint=False, related_name='+')
+    permission = models.ForeignKey('Permission', models.CASCADE, db_constraint=False, related_name='+')
     pk = models.CompositePrimaryKey('role', 'permission')
 
     class Meta:
@@ -661,7 +695,7 @@ class RolePermission(models.Model):
 class SaleInfo(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     type = PgEnumField('sale_type', max_length=10, db_default='other')
-    sale_name = models.CharField(max_length=80)
+    sale_name = models.CharField(max_length=80, unique=True)
     value_name = models.CharField(max_length=80, null=True, blank=True)
     display_order = models.IntegerField(null=True, blank=True)
     enabled = models.BooleanField(db_default=True)
@@ -673,8 +707,8 @@ class SaleInfo(UpdatedAtMixin):
 
 class ShareLink(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
-    path_segment = models.CharField(max_length=255)
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+')
+    path_segment = models.CharField(max_length=255, unique=True)
     token = models.TextField()
     transaction_date = models.DateField()
     expires_at = models.DateTimeField()
@@ -686,10 +720,10 @@ class ShareLink(models.Model):
 
 class SubscriptionAuditLog(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='subscription_audit')
     function_code = PgEnumField('module_code', max_length=15)
-    payer_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name="+")
-    actor_user = models.ForeignKey('User', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
+    payer_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name='+')
+    actor_user = models.ForeignKey('User', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
     action = models.CharField(max_length=40)
     phase_before = PgEnumField('subscription_phase', max_length=16, null=True, blank=True)
     phase_after = PgEnumField('subscription_phase', max_length=16, null=True, blank=True)
@@ -709,7 +743,7 @@ class SubscriptionAuditLog(models.Model):
 
 class SubscriptionEmailLog(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    user = models.ForeignKey('User', models.CASCADE, db_constraint=False, related_name="+")
+    user = models.ForeignKey('User', models.CASCADE, db_constraint=False, related_name='subscription_emails')
     event = models.CharField(max_length=40)
     dedupe_key = models.CharField(max_length=200)
     recipient = models.CharField(max_length=200, null=True, blank=True)
@@ -719,12 +753,15 @@ class SubscriptionEmailLog(models.Model):
 
     class Meta:
         db_table = 'subscription_email_log'
+        constraints = [
+            models.UniqueConstraint(fields=['event', 'dedupe_key'], name='uq_sub_email_event_key'),
+        ]
 
 
 class SubscriptionInvoice(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    payer_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name="+")
-    billing_group = models.ForeignKey('PayerBillingGroup', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
+    payer_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name='subscription_invoices')
+    billing_group = models.ForeignKey('PayerBillingGroup', models.SET_NULL, db_constraint=False, related_name='invoices', null=True, blank=True)
     stripe_customer_id = models.CharField(max_length=255, null=True, blank=True)
     external_id = models.CharField(max_length=255, null=True, blank=True)
     period_start = models.DateTimeField()
@@ -735,10 +772,10 @@ class SubscriptionInvoice(UpdatedAtMixin):
     memo = models.CharField(max_length=500, null=True, blank=True)
     payment_method = models.CharField(max_length=100, null=True, blank=True)
     hosted_invoice_url = models.CharField(max_length=500, null=True, blank=True)
-    idempotency_key = models.CharField(max_length=255, null=True, blank=True)
+    idempotency_key = models.CharField(max_length=255, unique=True, null=True, blank=True)
     issued_at = models.DateTimeField(null=True, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
-    invoice_number = models.CharField(max_length=40, null=True, blank=True)
+    invoice_number = models.CharField(max_length=40, unique=True, null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
 
     class Meta:
@@ -755,8 +792,8 @@ class SubscriptionInvoiceCounter(models.Model):
 
 class SubscriptionInvoiceLine(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    invoice = models.ForeignKey('SubscriptionInvoice', models.CASCADE, db_constraint=False, related_name="+")
-    entity = models.ForeignKey('Entity', models.DO_NOTHING, db_constraint=False, related_name="+")
+    invoice = models.ForeignKey('SubscriptionInvoice', models.CASCADE, db_constraint=False, related_name='lines')
+    entity = models.ForeignKey('Entity', models.DO_NOTHING, db_constraint=False, related_name='+')
     entity_name = models.CharField(max_length=255)
     product_name = models.CharField(max_length=255)
     amount = models.IntegerField()
@@ -769,13 +806,14 @@ class SubscriptionInvoiceLine(models.Model):
 
     class Meta:
         db_table = 'subscription_invoice_line'
+        ordering = ('created_at',)
 
 
 class SubscriptionTransfer(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
-    from_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name="+")
-    to_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name="+")
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='subscription_transfers')
+    from_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name='transfers_offered')
+    to_user = models.ForeignKey('User', models.DO_NOTHING, db_constraint=False, related_name='transfers_received')
     status = PgEnumField('transfer_status', max_length=9)
     created_at = models.DateTimeField(db_default=Now())
     expires_at = models.DateTimeField()
@@ -793,11 +831,14 @@ class SubscriptionTransfer(models.Model):
 
     class Meta:
         db_table = 'subscription_transfer'
+        constraints = [
+            models.UniqueConstraint(fields=['entity'], condition=models.Q(status__in=["pending", "charging", "charged"]), name='idx_st_entity_open'),
+        ]
 
 
 class TermsConsent(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    user = models.ForeignKey('User', models.CASCADE, db_constraint=False, related_name="+")
+    user = models.ForeignKey('User', models.CASCADE, db_constraint=False, related_name='+')
     terms_version = models.CharField(max_length=32)
     document_hash = models.CharField(max_length=64)
     accepted_at = models.DateTimeField(db_default=Now())
@@ -807,6 +848,9 @@ class TermsConsent(models.Model):
 
     class Meta:
         db_table = 'terms_consent'
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'terms_version'], name='uq_terms_consent_user_version'),
+        ]
 
 
 class Tracker(models.Model):
@@ -830,7 +874,7 @@ class Tracker(models.Model):
 
 class User(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    username = models.CharField(max_length=150)
+    username = models.CharField(max_length=150, unique=True)
     email = models.CharField(max_length=254, null=True, blank=True)
     password = models.CharField(max_length=255)
     first_name = models.CharField(max_length=150, db_default='')
@@ -853,8 +897,8 @@ class User(UpdatedAtMixin):
 
 
 class UserEntity(models.Model):
-    user = models.ForeignKey('User', models.CASCADE, db_constraint=False, related_name="+")
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+")
+    user = models.ForeignKey('User', models.CASCADE, db_constraint=False, related_name='+')
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+')
     role = PgEnumField('entity_role', max_length=12)
     approved = models.BooleanField(db_default=False)
     joined_at = models.DateTimeField(null=True, blank=True)
@@ -867,8 +911,8 @@ class UserEntity(models.Model):
 
 class UserStripeCustomer(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    user = models.ForeignKey('User', models.CASCADE, db_constraint=False, related_name="+")
-    stripe_customer_id = models.CharField(max_length=255)
+    user = models.OneToOneField('User', models.CASCADE, db_constraint=False, related_name='stripe_customer')
+    stripe_customer_id = models.CharField(max_length=255, unique=True)
     anchor_at = models.DateTimeField(null=True, blank=True)
     currency = CharNField(max_length=3, null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
@@ -879,7 +923,7 @@ class UserStripeCustomer(UpdatedAtMixin):
 
 class UserToken(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    user = models.ForeignKey('User', models.CASCADE, db_constraint=False, related_name="+")
+    user = models.OneToOneField('User', models.CASCADE, db_constraint=False, related_name='+')
     access_token = models.TextField(null=True, blank=True)
     access_token_obtained_at = models.DateTimeField(null=True, blank=True)
     access_token_expires_in = models.IntegerField(null=True, blank=True)
@@ -894,7 +938,7 @@ class UserToken(UpdatedAtMixin):
 
 class XeroBankTransaction(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    sync_report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name="+", null=True, blank=True)
+    sync_report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name='+', null=True, blank=True)
     type = models.CharField(max_length=10)
     xero_contact_id = models.CharField(max_length=36)
     xero_contact_name = models.CharField(max_length=100, null=True, blank=True)
@@ -917,7 +961,7 @@ class XeroBankTransaction(models.Model):
 
 class XeroBankTransfer(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    sync_report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name="+")
+    sync_report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name='+')
     from_bank_account_id = models.CharField(max_length=36)
     to_bank_account_id = models.CharField(max_length=36)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
@@ -935,7 +979,7 @@ class XeroBankTransfer(UpdatedAtMixin):
 
 class XeroBillResponseLine(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    xero_bill_sync = models.ForeignKey('XeroBillSync', models.CASCADE, db_constraint=False, related_name="+")
+    xero_bill_sync = models.ForeignKey('XeroBillSync', models.CASCADE, db_constraint=False, related_name='+')
     xero_line_item_id = models.CharField(max_length=36, db_default='')
     description = models.TextField(db_default='')
     quantity = models.DecimalField(max_digits=12, decimal_places=4, db_default=Decimal("0"))
@@ -954,7 +998,7 @@ class XeroBillResponseLine(models.Model):
 
 class XeroBillSync(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    bill = models.ForeignKey('Bill', models.CASCADE, db_constraint=False, related_name="+")
+    bill = models.ForeignKey('Bill', models.CASCADE, db_constraint=False, related_name='+')
     sync_direction = PgEnumField('sync_direction', max_length=4)
     sync_type = models.CharField(max_length=30)
     sync_status = PgEnumField('sync_status', max_length=10, db_default='pending')
@@ -992,8 +1036,8 @@ class XeroBillSync(UpdatedAtMixin):
 
 class XeroBillSyncLine(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    xero_bill_sync = models.ForeignKey('XeroBillSync', models.CASCADE, db_constraint=False, related_name="+")
-    bill_line = models.ForeignKey('BillLine', models.SET_NULL, db_constraint=False, related_name="+", null=True, blank=True)
+    xero_bill_sync = models.ForeignKey('XeroBillSync', models.CASCADE, db_constraint=False, related_name='+')
+    bill_line = models.ForeignKey('BillLine', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
     description = models.TextField(db_default='')
     quantity = models.DecimalField(max_digits=12, decimal_places=4, db_default=Decimal("0"))
     unit_amount = models.DecimalField(max_digits=12, decimal_places=2, db_default=Decimal("0"))
@@ -1012,7 +1056,7 @@ class XeroBillSyncLine(models.Model):
 
 class XeroBillSyncPayload(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    xero_bill_sync = models.ForeignKey('XeroBillSync', models.CASCADE, db_constraint=False, related_name="+")
+    xero_bill_sync = models.OneToOneField('XeroBillSync', models.CASCADE, db_constraint=False, related_name='+')
     request_json = models.JSONField(null=True, blank=True)
     response_json = models.JSONField(null=True, blank=True)
     request_headers = models.JSONField(null=True, blank=True)
@@ -1025,7 +1069,7 @@ class XeroBillSyncPayload(UpdatedAtMixin):
 
 class XeroContactSync(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name="+", null=True, blank=True)
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+', null=True, blank=True)
     xero_contact_id = models.CharField(max_length=36)
     xero_org_id = models.CharField(max_length=36, null=True, blank=True)
     name = models.CharField(max_length=150)
@@ -1038,7 +1082,7 @@ class XeroContactSync(UpdatedAtMixin):
 
 class XeroReportSync(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name="+")
+    report = models.OneToOneField('Report', models.CASCADE, db_constraint=False, related_name='+')
     sync_status = models.CharField(max_length=20, null=True, blank=True)
     reported_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)

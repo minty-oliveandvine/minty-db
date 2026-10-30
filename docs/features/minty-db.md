@@ -20,6 +20,8 @@ CI runs everything twice: on SQLite, and on Postgres 15 built from the packaged 
 - **Ids are `uuid.UUID`** (owner, 2026-10-28). `MintyUUIDField`, which returned text, is retired. subscription-api and petty-cash-api convert before they switch, and a test-only check turns any `UUID`-vs-`str` comparison into a failure.
 - **Foreign keys only on `<name>_id` columns, with `db_constraint=False` and `related_name="+"`.** This keeps the APIs' existing code and lenient SQLite tests working; the real constraints are the database's. `created_by`, `invited_by` and `currency` stay plain fields, because the APIs assign raw values to them.
 - **Database defaults are `db_default`.** Django 5.2 returns them on insert, so `created_at` is a datetime straight after `create()` on both SQLite and Postgres.
+- **Unique rules come from the schema (v0.2).** Every unique constraint and unique index is read from the catalogue: one column -> `unique=True` (a key becomes a `OneToOneField`), several -> `Meta.constraints`, a partial index -> a `UniqueConstraint` whose `Q` is written once in `PARTIAL_UNIQUE` and checked against the predicate Postgres reports (the generator stops if it changes).
+- **Reverse names and ordering are declared exceptions (v0.2).** `RELATED_NAMES` and `ORDERING` in the generator hold what an API's code uses (`user.billing_groups`, `invoice.lines` in creation order) - added as each API switches, never removed while one uses them. v0.2 regenerated `0001`'s STATE only: the rules were already in the schema file, so a baselined database is unchanged.
 - **No pyright.** Django ships no type stubs, the same reason the Django APIs run only ruff.
 
 ## Where each database stands
