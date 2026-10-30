@@ -22,6 +22,19 @@ CI runs everything twice: on SQLite, and on Postgres 15 built from the packaged 
 - **Database defaults are `db_default`.** Django 5.2 returns them on insert, so `created_at` is a datetime straight after `create()` on both SQLite and Postgres.
 - **No pyright.** Django ships no type stubs, the same reason the Django APIs run only ruff.
 
+## Where each database stands
+
+Each database was checked column by column against the models before its baseline (`python -m minty_db migrate --baseline` records `0001` without running it).
+
+| Database | State |
+|---|---|
+| Local `postgres` / `pettycashv3` | Baselined 2026-10-30 (0 differences) |
+| Local `pettycashv3_data` / `pettycashv3` | Baselined 2026-10-30 (0 differences) |
+| Supabase `development` | Brought up to date 2026-10-30: Minty's `i1a01` and 01's `entity_setup_summary` view had never reached it. Then 0 differences, baselined |
+| Supabase `pettycashv3` | 0 differences, **not baselined** (owner, 2026-10-30): it has no `django_migrations` table yet |
+
+`pettycashv3` (and local `postgres`) also hold `sessions`, Flask-Session's table. It is outside the schema file and has no model; it goes with Flask's session cutover.
+
 ## Open
 
 - Flask's `docs/schema/generators/audit_models.py` should read `minty-db` too. That's a Minty change, made when Alembic stops (Phase 0, step 5).
