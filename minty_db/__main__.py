@@ -3,10 +3,17 @@
     python -m minty_db status              # which migrations the database has
     python -m minty_db migrate --baseline  # an EXISTING schema: record 0001 without running it
     python -m minty_db migrate             # apply what is missing (a missing schema is built first)
+    python -m minty_db patch FILE [--apply] # run a schema patch: a dry run unless --apply
 
 The database is ``DATABASE_URL`` (its ``?schema=``, else ``MINTY_DB_SCHEMA``, else pettycashv3).
 Django's own record, ``django_migrations``, lives in that schema. Every Supabase run needs the
 owner's yes first.
+
+``0001`` stays the only migration until the owner says otherwise (2026-11-03). Until then a
+schema change is the schema file (a fresh build runs it) plus a patch in
+``minty_db/schema/patches/`` that brings a database already at ``0001`` up to it. A patch names
+no schema - ``search_path`` is the URL's - and runs in one transaction, rolled back unless
+``--apply``; its SELECTs are printed as the report.
 """
 
 from __future__ import annotations
@@ -14,6 +21,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from minty_db import DEFAULT_SCHEMA
@@ -71,12 +79,39 @@ def _has_0001() -> bool:
     return recorder.has_table() and ("minty_db", "0001_initial") in recorder.applied_migrations()
 
 
+def run_patch(path: Path, *, apply: bool) -> list[list[tuple]]:
+    """Run the SQL file ``path`` in one transaction on Django's default database, rolled back
+    unless ``apply``. Returns every result set the file's SELECTs produced, in order (psycopg 3
+    reports each one; psycopg 2 only the last)."""
+    from django.db import connection, transaction
+
+    sql = path.read_text(encoding="utf-8")
+    results: list[list[tuple]] = []
+    with transaction.atomic():
+        with connection.cursor() as cur:
+            cur.execute(sql)
+            while True:
+                if cur.description:
+                    results.append([tuple(c.name for c in cur.description), *cur.fetchall()])
+                try:
+                    if not cur.nextset():
+                        break
+                except Exception:  # psycopg 2 has one result set
+                    break
+        if not apply:
+            transaction.set_rollback(True)
+    return results
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m minty_db")
     sub = ap.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
     mig = sub.add_parser("migrate")
     mig.add_argument("--baseline", action="store_true", help="record 0001 on an existing schema, run nothing")
+    pat = sub.add_parser("patch")
+    pat.add_argument("file", type=Path, help="a .sql file from minty_db/schema/patches/")
+    pat.add_argument("--apply", action="store_true", help="commit; without it the patch is rolled back")
     args = ap.parse_args(argv)
 
     schema = _configure()
@@ -86,6 +121,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"database: {host} / schema {schema}")
     if args.command == "status":
         call_command("showmigrations", "minty_db")
+        return 0
+    if args.command == "patch":
+        if not _schema_exists(schema) or not _has_0001():
+            raise SystemExit(f"schema {schema!r} is not at 0001: build or baseline it first")
+        for rows in run_patch(args.file, apply=args.apply):
+            for row in rows:
+                print("  ".join(str(v) for v in row))
+            print()
+        print("APPLIED" if args.apply else "DRY RUN - rolled back; add --apply to commit")
         return 0
 
     exists = _schema_exists(schema)

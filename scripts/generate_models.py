@@ -85,6 +85,10 @@ VIRTUAL_FKS = {
 # Postgres reports: if it changes (or a new partial index appears), the generator stops.
 PARTIAL_UNIQUE = {
     "uq_bapm_one_default": ("is_default", "models.Q(is_default=True)"),
+    "uq_ebax_entity_xero_account": (
+        "((xero_account_id)::text <> ''::text)",
+        '~models.Q(xero_account_id="")',
+    ),
     "idx_st_entity_open": (
         "(status = ANY (ARRAY['pending'::transfer_status, 'charging'::transfer_status, 'charged'::transfer_status]))",
         'models.Q(status__in=["pending", "charging", "charged"])',

@@ -1337,6 +1337,7 @@ CREATE TABLE pettycash_test.entity_account_xero (
   name            VARCHAR(80) NULL,
   is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
   CONSTRAINT entity_account_xero_pkey PRIMARY KEY (id),
+  CONSTRAINT uq_eax_account UNIQUE (account_id),
   CONSTRAINT fk_eax_account FOREIGN KEY (account_id) REFERENCES pettycash_test.account_info (id) ON DELETE CASCADE
 );
 
@@ -1384,6 +1385,7 @@ CREATE TABLE pettycash_test.xero_contact_sync (
   created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
   CONSTRAINT xero_contact_sync_pkey PRIMARY KEY (id),
+  CONSTRAINT uq_xcs_entity_contact UNIQUE (entity_id, xero_contact_id),
   CONSTRAINT fk_xero_contact_entity FOREIGN KEY (entity_id) REFERENCES pettycash_test.entities (id) ON DELETE CASCADE
 );
 
@@ -2496,6 +2498,14 @@ CREATE INDEX idx_pbg_paid_through         ON pettycash_test.payer_billing_group 
 -- One default card per billing account, enforced rather than merely indexed. A
 -- second default is not a slow query, it is an account that cannot say which
 -- card it charges. Partial, because every non-default row is unconstrained.
+-- One bill code per Xero account per company (2026-11-03). The syncs that copy the
+-- chart in read-then-insert, so two at once wrote a code twice (onboarding showed it
+-- twice). Partial, because a code added by hand has no Xero id (NULL, or '' as
+-- minty-payment-request-api writes it) and any number of those may exist.
+CREATE UNIQUE INDEX uq_ebax_entity_xero_account
+    ON pettycash_test.entity_bill_account_xero (entity_id, xero_account_id)
+ WHERE xero_account_id <> '';
+
 CREATE UNIQUE INDEX uq_bapm_one_default
     ON pettycash_test.billing_account_payment_method (billing_group_id)
  WHERE is_default;

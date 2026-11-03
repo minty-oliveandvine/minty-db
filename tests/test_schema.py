@@ -118,6 +118,117 @@ def test_migrate_builds_a_fresh_database_and_baselines_an_existing_one():
         pg.drop_database(existing)
 
 
+XERO_KEYS = ("uq_eax_account", "uq_ebax_entity_xero_account", "uq_xcs_entity_contact")
+XERO_PATCH = ROOT / "minty_db" / "schema" / "patches" / "2026-11-03_xero_unique_keys.sql"
+
+
+def _keys(conn) -> dict[str, str]:
+    """The three Xero keys as Postgres defines them: two constraints and one partial index."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+        "WHERE connamespace = 'pettycashv3'::regnamespace AND conname = ANY(%s) "
+        "UNION ALL SELECT indexname, indexdef FROM pg_indexes "
+        "WHERE schemaname = 'pettycashv3' AND indexname = ANY(%s)",
+        (list(XERO_KEYS), list(XERO_KEYS)),
+    )
+    return dict(cur.fetchall())
+
+
+@postgres_only
+def test_the_xero_keys_patch_merges_duplicates_and_matches_a_fresh_build():
+    """2026-11-03: 0001 stays the only migration, so a database already at 0001 gets the three
+    Xero unique keys from a hand-run patch. Built at the OLD shape with duplicates, the patch
+    keeps one row per key, moves every reference to the row it keeps, adds the keys exactly as
+    a fresh build has them, and is a no-op the second time. A dry run changes nothing."""
+    import uuid
+
+    from minty_db.testing import pg
+
+    base = os.environ.get("MINTY_TEST_PG_DBNAME", "minty_test")
+    old, fresh = f"{base}_patch_old", f"{base}_patch_fresh"
+    try:
+        built_fresh = pg.build(fresh)
+        conn = pg.connect(built_fresh.uri)
+        expected = _keys(conn)
+        conn.close()
+        assert set(expected) == set(XERO_KEYS)
+
+        built = pg.build(old)
+        conn = pg.connect(built.uri)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET search_path = pettycashv3")
+        cur.execute("ALTER TABLE entity_account_xero DROP CONSTRAINT uq_eax_account")
+        cur.execute("DROP INDEX uq_ebax_entity_xero_account")
+        cur.execute("ALTER TABLE xero_contact_sync DROP CONSTRAINT uq_xcs_entity_contact")
+        entity, account = uuid.uuid4(), uuid.uuid4()
+        keep_c, dup_c = uuid.uuid4(), uuid.uuid4()
+        cur.execute("INSERT INTO entities (id, name) VALUES (%s, 'Dup Co')", (entity,))
+        cur.execute(
+            "INSERT INTO account_info (id, entity_id, type, name, xero_account_id, xero_code) "
+            "VALUES (%s, %s, 'EXPENSE', 'Advertising', 'a-1', '400')",
+            (account, entity),
+        )
+        cur.execute(
+            "INSERT INTO entity_account_xero (account_id, is_active) VALUES (%s, false), (%s, true)", (account, account)
+        )
+        cur.execute(
+            "INSERT INTO entity_bill_account_xero (entity_id, account_code, xero_account_id, is_active) "
+            "VALUES (%s, '400', 'a-1', false), (%s, '400', 'a-1', true), "
+            "(%s, '999', '', true), (%s, '998', '', true)",
+            (entity, entity, entity, entity),
+        )
+        cur.execute(
+            "INSERT INTO xero_contact_sync (id, entity_id, xero_contact_id, name, created_at) "
+            "VALUES (%s, %s, 'c-1', 'Kept', now() - interval '1 day'), (%s, %s, 'c-1', 'Dup', now())",
+            (keep_c, entity, dup_c, entity),
+        )
+        cur.execute(
+            "INSERT INTO entity_pettycash_settings (entity_id, director_contact_id) VALUES (%s, %s)", (entity, dup_c)
+        )
+        cur.execute("INSERT INTO bill (entity_id, contact_id) VALUES (%s, %s)", (entity, dup_c))
+        url = built.uri + "?schema=pettycashv3"
+        assert _run_cli("migrate", "--baseline", database_url=url).returncode == 0
+
+        def counts():
+            cur.execute("SELECT count(*) FROM entity_account_xero WHERE account_id = %s", (account,))
+            eax = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM entity_bill_account_xero WHERE entity_id = %s", (entity,))
+            bills = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM xero_contact_sync WHERE entity_id = %s", (entity,))
+            return eax, bills, cur.fetchone()[0]
+
+        dry = _run_cli("patch", str(XERO_PATCH), database_url=url)
+        assert dry.returncode == 0, dry.stdout + dry.stderr
+        assert "DRY RUN" in dry.stdout and "xero_contact_sync duplicates  1" in dry.stdout, dry.stdout
+        assert counts() == (2, 4, 2)
+        assert _keys(conn) == {}
+
+        done = _run_cli("patch", str(XERO_PATCH), "--apply", database_url=url)
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert "APPLIED" in done.stdout
+        assert counts() == (1, 3, 1), "hand-added codes (no Xero id, '') are left alone"
+        cur.execute("SELECT is_active FROM entity_account_xero WHERE account_id = %s", (account,))
+        assert cur.fetchone()[0] is True, "the ticked row is the one kept"
+        cur.execute("SELECT is_active FROM entity_bill_account_xero WHERE xero_account_id = 'a-1'")
+        assert cur.fetchone()[0] is True
+        cur.execute("SELECT director_contact_id FROM entity_pettycash_settings WHERE entity_id = %s", (entity,))
+        assert cur.fetchone()[0] == keep_c
+        cur.execute("SELECT contact_id FROM bill WHERE entity_id = %s", (entity,))
+        assert cur.fetchone()[0] == keep_c
+        assert _keys(conn) == expected
+
+        again = _run_cli("patch", str(XERO_PATCH), "--apply", database_url=url)
+        assert again.returncode == 0, again.stdout + again.stderr
+        assert counts() == (1, 3, 1) and _keys(conn) == expected
+        assert "[X] 0001_initial" in _run_cli("status", database_url=url).stdout
+        conn.close()
+    finally:
+        pg.drop_database(old)
+        pg.drop_database(fresh)
+
+
 def test_the_database_url_is_decoded_and_keeps_its_sslmode():
     """A Supabase URI percent-encodes its password and sets sslmode; the command must pass both on."""
     from minty_db.__main__ import _settings_for

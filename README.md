@@ -34,10 +34,13 @@ Ids are Python `uuid.UUID` objects (owner, 2026-10-28). A `<name>_id` column wit
 
 The owner approves every schema change first.
 
-1. Edit `minty_db/schema/01_schema_rebased.sql`.
+`0001` stays the only migration until the owner says otherwise (2026-11-03). Until then:
+
+1. Edit `minty_db/schema/01_schema_rebased.sql` (and keep Minty's `docs/schema/01_schema_rebased.sql` byte-identical).
 2. Run `python scripts/generate_models.py`, which builds a throwaway database and rewrites `models.py` and `enums.py`.
-3. Run `python -m django makemigrations minty_db` with migrations on. The new migration is ordinary Django; when an enum grows, add `RunSQL` for `ALTER TYPE ... ADD VALUE`.
-4. Tag a new version, run `python -m minty_db migrate` on each database (ask first for Supabase), then bump the pin in each service that needs the change.
+3. Fold the change into `0001`'s STATE half by hand (its DATABASE half already runs the file), until `makemigrations --check` has nothing to write. No `0002`.
+4. Write a patch in `minty_db/schema/patches/` that brings a database already at `0001` to the new file: no schema names (the runner sets `search_path`), idempotent, SELECTs for the report.
+5. Tag a new version. On each database run `python -m minty_db patch <file>` (a dry run), then again with `--apply` (ask first for Supabase). Then bump the pin in each service that needs the change.
 
 Keep changes additive first: add now, remove in a later tag, so a service on the older pin keeps working.
 

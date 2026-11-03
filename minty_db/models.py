@@ -246,7 +246,7 @@ class Entity(UpdatedAtMixin):
 
 class EntityAccountXero(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    account = models.ForeignKey('AccountInfo', models.CASCADE, db_constraint=False, related_name='+')
+    account = models.OneToOneField('AccountInfo', models.CASCADE, db_constraint=False, related_name='+')
     type = models.CharField(max_length=50, null=True, blank=True)
     xero_org_id = models.CharField(max_length=36, null=True, blank=True)
     xero_account_id = models.CharField(max_length=36, null=True, blank=True)
@@ -273,6 +273,9 @@ class EntityBillAccountXero(UpdatedAtMixin):
 
     class Meta:
         db_table = 'entity_bill_account_xero'
+        constraints = [
+            models.UniqueConstraint(fields=['entity_id', 'xero_account_id'], condition=~models.Q(xero_account_id=""), name='uq_ebax_entity_xero_account'),
+        ]
 
 
 class EntityBillCurrency(UpdatedAtMixin):
@@ -1078,6 +1081,9 @@ class XeroContactSync(UpdatedAtMixin):
 
     class Meta:
         db_table = 'xero_contact_sync'
+        constraints = [
+            models.UniqueConstraint(fields=['entity', 'xero_contact_id'], name='uq_xcs_entity_contact'),
+        ]
 
 
 class XeroReportSync(UpdatedAtMixin):
