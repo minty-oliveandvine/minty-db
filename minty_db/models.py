@@ -415,10 +415,10 @@ class EntityPettycashSettings(UpdatedAtMixin):
 
 class EntitySaleSetting(models.Model):
     entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+')
-    sale_id = models.UUIDField()
+    sale = models.ForeignKey('SaleInfo', models.DO_NOTHING, db_constraint=False, related_name='entity_links')
     is_active = models.BooleanField(db_default=True)
     display_order = models.IntegerField(null=True, blank=True)
-    pk = models.CompositePrimaryKey('entity', 'sale_id')
+    pk = models.CompositePrimaryKey('entity', 'sale')
 
     class Meta:
         db_table = 'entity_sale_setting'
@@ -923,7 +923,7 @@ class UserStripeCustomer(UpdatedAtMixin):
 
 class UserToken(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    user = models.OneToOneField('User', models.CASCADE, db_constraint=False, related_name='+')
+    user = models.OneToOneField('User', models.CASCADE, db_constraint=False, related_name='token')
     access_token = models.TextField(null=True, blank=True)
     access_token_obtained_at = models.DateTimeField(null=True, blank=True)
     access_token_expires_in = models.IntegerField(null=True, blank=True)

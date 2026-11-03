@@ -67,6 +67,18 @@ RELATED_NAMES = {
     ("subscription_transfer", "to_user_id"): "transfers_received",
     ("subscription_audit_log", "entity_id"): "subscription_audit",
     ("subscription_email_log", "user_id"): "subscription_emails",
+    # minty-payment-request-api (2026-10-30)
+    ("user_token", "user_id"): "token",
+}
+
+# Relations the schema does NOT declare but an API's code joins through, by (table, column):
+# (target table, reverse name). Django-only (``db_constraint=False``): nothing reaches the database.
+VIRTUAL_FKS = {
+    # minty-onboarding-api (2026-10-30) joins sale_info through it (``sale__type``,
+    # ``select_related("sale")``). 01 says sale_id is NOT a reference - rows mint their own ids
+    # and a real FK rejected 947 of them - so a join here simply skips rows that do not match,
+    # exactly as the API's own copy behaved.
+    ("entity_sale_setting", "sale_id"): ("sale_info", "entity_links"),
 }
 
 # A partial unique index needs its condition as a Q. Keyed by index name, with the predicate
@@ -162,7 +174,7 @@ def field_line(col, table_pk, fks, enums_len, view_key, unique_cols=frozenset())
         target_table, target_col, rule = fk
         cls = "models.OneToOneField" if single_pk or unique else "models.ForeignKey"
         on_delete = {"c": "models.CASCADE", "n": "models.SET_NULL"}.get(rule, "models.DO_NOTHING")
-        related = RELATED_NAMES.get((table, column), "+")
+        related = RELATED_NAMES.get((table, column)) or VIRTUAL_FKS.get((table, column), (None, "+"))[1]
         kw = [repr(camel(target_table)), on_delete, "db_constraint=False", f"related_name={related!r}"]
         if target_col != "id":
             kw.append(f"to_field={target_col!r}")
@@ -224,6 +236,10 @@ def render(cat: dict) -> tuple[str, str]:
     for t, c in cat["pk"]:
         pks[t].append(c)
     fks = {(t, c): (ft, fc, rule) for t, c, ft, fc, rule in cat["fk"]}
+    for (table, column), (target, _related) in VIRTUAL_FKS.items():
+        if (table, column) in fks:
+            raise SystemExit(f"{table}.{column} has a real foreign key now - drop it from VIRTUAL_FKS")
+        fks[(table, column)] = (target, "id", "a")
     triggered = {t for (t,) in cat["triggers"]}
     enums = {name: labels for name, labels in cat["enums"]}
     enums_len = {name: max(len(x) for x in labels) for name, labels in enums.items()}

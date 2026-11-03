@@ -23,8 +23,9 @@ MIGRATION_MODULES = {"minty_db": None}  # a service never runs minty_db's migrat
 ```
 
 ```python
-# conftest.py: with MINTY_TEST_PG_URI set, tests run on a Postgres built from the schema file
-pytest_plugins = ["minty_db.testing.pg"]
+# conftest.py: with MINTY_TEST_PG_URI set, tests run on a Postgres built from the schema file;
+# the guard makes the service's own code comparing a UUID with uuid text raise under test
+pytest_plugins = ["minty_db.testing.pg", "minty_db.testing.uuid_guard"]
 ```
 
 Ids are Python `uuid.UUID` objects (owner, 2026-10-28). A `<name>_id` column with a foreign key is a `ForeignKey(<name>)` with `db_constraint=False` and `related_name="+"`, so `obj.<name>_id` and `filter(<name>_id=...)` work as they did on a plain id. Behaviour that one API needs (properties, reverse names, choices) stays in that API, for example as a proxy model.
