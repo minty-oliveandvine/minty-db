@@ -574,15 +574,17 @@
 --     writers listed below are REJECTED, not merely wrong. The loader maps the
 --     value (gen.py ENUM_MAP); the tracker view filters on the new name.
 --     entity_function_map is untouched - it references the row by id. "Super
---     Minty" is the billing_plan bundle row (BILL+PETTY_CASH), not a module.
+--     Minty" is the billing_plan bundle row (PAYMENT_REQUEST+PETTY_CASH), not a
+--     module.
 --
---     NOT renamed, by decision: billing_plan.code stays 'BILL', 'PETTY_CASH',
---     'BILL+PETTY_CASH'. The plan key is derived in code as the sorted join of
---     the module codes (blueprints/subscription/models/billing_plan.py:12-14),
---     which will produce 'PAYMENT_REQUEST+PETTY_CASH' once the code follows -
---     so the plan lookup needs a mapping in the code pass. The payment-request
---     app's own tables (bill, bill_line, bill_audit ...) and enums keep their
---     names.
+--     billing_plan.code FOLLOWED on 2026-11-03 (owner): 'PETTY_CASH',
+--     'PAYMENT_REQUEST', 'PAYMENT_REQUEST+PETTY_CASH', the sorted join of the
+--     module codes. From 2026-09-16 to then it kept the word BILL by decision
+--     and the APIs mapped between the two. The rows were renamed by a hand
+--     UPDATE per database (data, not DDL: the column is VARCHAR and nothing
+--     references a plan by code), recorded in seed_catalogue.sql. The
+--     payment-request app's own tables (bill, bill_line, bill_audit ...) and
+--     enums keep their names.
 --
 --     THE CODE THAT NOW DISAGREES, for the pass that follows: Minty
 --     MODULE_BILL = "BILL" (blueprints/subscription/models/billing_plan.py:41,
@@ -1014,7 +1016,7 @@ CREATE TYPE pettycash_test.audit_outcome      AS ENUM ('succeeded','aborted');
 -- status. Production: entity_function PETTY_CASH 1, BILL 1 -> PAYMENT_REQUEST;
 -- entity_module_subscription and subscription_audit_log hold no rows. Typed on
 -- all three function_code columns. billing_plan.code stays VARCHAR - it holds
--- composite keys (BILL+PETTY_CASH) by the item 20 decision. "Super Minty" is
+-- composite keys (PAYMENT_REQUEST+PETTY_CASH; see item 20). "Super Minty" is
 -- that bundle PLAN, not a module, and needs no entity_function row.
 CREATE TYPE pettycash_test.module_code        AS ENUM ('PETTY_CASH','PAYMENT_REQUEST');
 

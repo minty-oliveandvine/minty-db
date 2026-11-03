@@ -51,14 +51,22 @@ ON CONFLICT (currency_code) DO NOTHING;
 -- The price catalogue.
 --
 -- `amount` is an INTEGER in the minor unit of `currency` - 28000 is HKD 280.00, not 28,000.
--- `code` is the module combination the plan covers: a company on both modules is billed the
--- combined plan, which is why `BILL+PETTY_CASH` is cheaper than the two singles together.
+-- `code` is the module combination the plan covers, in module codes, sorted and joined by `+`:
+-- a company on both modules is billed the combined plan, which is why
+-- `PAYMENT_REQUEST+PETTY_CASH` is cheaper than the two singles together.
+--
+-- THE PLAN WORD BILL IS GONE (2026-11-03, schema item 20 reversed). Until then the rows said
+-- `BILL` / `BILL+PETTY_CASH` while the module code said PAYMENT_REQUEST. The rows were renamed
+-- by hand in each database, checked with a SELECT before and after (no migration records it):
+-- local `postgres` and `pettycashv3_data`, Supabase `development` and `pettycashv3`. A database
+-- still holding BILL rows must be renamed, not re-seeded: ON CONFLICT (code) would add the new
+-- rows beside the old ones.
 -- --------------------------------------------------------------------------
 INSERT INTO pettycashv3.billing_plan (code, display_name, amount, currency, interval_months, is_active)
 VALUES
-  ('PETTY_CASH',      'Petty Cash',      28000, 'HKD', 1, TRUE),
-  ('BILL',            'Payment Request', 28000, 'HKD', 1, TRUE),
-  ('BILL+PETTY_CASH', 'Super Minty',     40000, 'HKD', 1, TRUE)
+  ('PETTY_CASH',                 'Petty Cash',      28000, 'HKD', 1, TRUE),
+  ('PAYMENT_REQUEST',            'Payment Request', 28000, 'HKD', 1, TRUE),
+  ('PAYMENT_REQUEST+PETTY_CASH', 'Super Minty',     40000, 'HKD', 1, TRUE)
 ON CONFLICT (code) DO NOTHING;
 
 -- --------------------------------------------------------------------------
