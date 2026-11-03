@@ -525,6 +525,14 @@
 --          (Payme x13, JCB x9) fold onto one catalogue row per exact name, the
 --          global row where there is one. entity_sale_setting and report_sale
 --          point at the survivor. sale_info is UNIQUE (sale_name) here.
+--       xero_contact_sync: 294 rows that repeat a company's Xero contact (123 pairs,
+--          2026-11-03 dump) - the syncs read-then-inserted with no lock. The lowest
+--          id survives (the row report_expense's contact resolves to); the three
+--          entity_pettycash_settings contact columns follow it (31). One row per
+--          (entity_id, xero_contact_id) here: uq_xcs_entity_contact.
+--       entity_bill_account_xero: 95 bill codes that repeat a company's Xero account;
+--          the default, then a ticked one, then the oldest survives. A code with no
+--          Xero id never collapses (uq_ebax_entity_xero_account is partial).
 --
 --     ADDED, because the data still named them:
 --       238 (239) xero_contact_sync rows (category 'restored') and 10 (7) account_info rows
