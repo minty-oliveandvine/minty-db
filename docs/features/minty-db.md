@@ -36,7 +36,7 @@ Each database was checked column by column against the models before its baselin
 | Local `postgres` / `pettycashv3` | Baselined 2026-10-30 (0 differences) |
 | Local `pettycashv3_data` / `pettycashv3` | Baselined 2026-10-30 (0 differences) |
 | Supabase `development` | Brought up to date 2026-10-30: Minty's `i1a01` and 01's `entity_setup_summary` view had never reached it. Then 0 differences, baselined |
-| Supabase `pettycashv3` | 0 differences, **not baselined** (owner, 2026-10-30): it has no `django_migrations` table yet |
+| Supabase `pettycashv3` | 0 differences (re-checked against v0.3), baselined 2026-11-03 |
 
 `pettycashv3` (and local `postgres`) also hold `sessions`, Flask-Session's table. It is outside the schema file and has no model; it goes with Flask's session cutover.
 
