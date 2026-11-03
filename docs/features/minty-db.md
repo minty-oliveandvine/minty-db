@@ -41,7 +41,7 @@ Each database was checked column by column against the models before its baselin
 | Supabase `development` | Brought up to date 2026-10-30: Minty's `i1a01` and 01's `entity_setup_summary` view had never reached it. Then 0 differences, baselined |
 | Supabase `pettycashv3` | 0 differences (re-checked against v0.3), baselined 2026-11-03 |
 
-Patches: `2026-11-03_xero_unique_keys.sql` is applied on none of them yet (each needs the owner's yes).
+Patches: `2026-11-03_xero_unique_keys.sql` applied 2026-11-03 on all four (owner: "do all"), each after a dry run, and a second run found nothing: local `postgres` (39 bill codes / 278 contacts merged, 33 references moved), `pettycashv3_data` (39 / 283 / 33), Supabase `development` (no duplicates; keys only), Supabase `pettycashv3` (39 / 284 / 33; the six touched tables saved first to Minty's git-ignored `backups/pg/supabase_pettycashv3_prexerokeys_20261103.dump`). All still record `0001` only.
 
 `pettycashv3` (and local `postgres`) also hold `sessions`, Flask-Session's table. It is outside the schema file and has no model; it goes with Flask's session cutover.
 
