@@ -245,3 +245,106 @@ def test_the_database_url_is_decoded_and_keeps_its_sslmode():
         "postgres",
     )
     assert db["OPTIONS"] == {"options": "-c search_path=development", "sslmode": "require"}
+
+
+SLIP_PATCH = ROOT / "minty_db" / "schema" / "patches" / "2026-11-03_slip_placeholders.sql"
+
+
+@postgres_only
+def test_the_slip_placeholder_patch_folds_each_holder_into_the_one_real_payment():
+    """2026-11-03 (owner): minty-payment-request-web's bank slip upload made a 0.00 payment with no
+    date to hold a slip when the bill had no payment yet. On a bill (not voided) with exactly one
+    real payment the slips move onto it and the holder goes; with several, onto the next one recorded
+    after the holder (owner, 2026-11-03); all before it, none, or a voided bill: left. A dry run
+    changes nothing; a second run has nothing to do. Minty's load does the same
+    (docs/schema/generators/gen.py SLIP_PLACEHOLDERS)."""
+    import uuid
+
+    from minty_db.testing import pg
+
+    base = os.environ.get("MINTY_TEST_PG_DBNAME", "minty_test")
+    name = f"{base}_patch_slips"
+    try:
+        built = pg.build(name)
+        conn = pg.connect(built.uri)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET search_path = pettycashv3")
+        entity = uuid.uuid4()
+
+        def bill(status="paid"):
+            b = uuid.uuid4()
+            cur.execute(
+                "INSERT INTO bill (id, entity_id, status, amount) VALUES (%s, %s, %s, 500)", (b, entity, status)
+            )
+            return b
+
+        def payment(b, amount, date="2026-09-01", at="2026-09-01 10:00"):
+            p = uuid.uuid4()
+            cur.execute(
+                "INSERT INTO payment (id, bill_id, amount, payment_date, created_at) VALUES (%s, %s, %s, %s, %s)",
+                (p, b, amount, date, at),
+            )
+            return p
+
+        def slip(p):
+            a = uuid.uuid4()
+            cur.execute(
+                "INSERT INTO attachment (id, original_name, stored_name, file_path, mime_type) "
+                "VALUES (%s, 'slip.pdf', 'slip.pdf', %s, 'application/pdf')",
+                (a, f"payments/{a}"),
+            )
+            cur.execute(
+                "INSERT INTO payment_attachment (payment_id, attachment_id, attachment_role) "
+                "VALUES (%s, %s, 'bank_slip')",
+                (p, a),
+            )
+            return a
+
+        clear = bill()
+        real = payment(clear, 500)
+        holder = payment(clear, 0, None)
+        moved = slip(holder)
+        several = bill()
+        payment(several, 100, at="2026-09-01 09:00")
+        next_slip = slip(payment(several, 0, None, at="2026-09-01 10:00"))
+        next_one = payment(several, 200, at="2026-09-01 10:01")
+        payment(several, 200, at="2026-09-01 10:02")
+        late = bill()
+        payment(late, 200, at="2026-09-01 09:00")
+        payment(late, 300, at="2026-09-01 09:30")
+        slip(payment(late, 0, None, at="2026-09-01 10:00"))
+        alone = bill("submitted")
+        slip(payment(alone, 0, None))
+        void = bill("void")
+        payment(void, 500)
+        slip(payment(void, 0, None))
+        url = built.uri + "?schema=pettycashv3"
+        assert _run_cli("migrate", "--baseline", database_url=url).returncode == 0
+
+        def state():
+            cur.execute("SELECT count(*) FROM payment WHERE amount = 0")
+            holders = cur.fetchone()[0]
+            cur.execute("SELECT payment_id FROM payment_attachment WHERE attachment_id = %s", (moved,))
+            return holders, cur.fetchone()[0]
+
+        dry = _run_cli("patch", str(SLIP_PATCH), database_url=url)
+        assert dry.returncode == 0, dry.stdout + dry.stderr
+        assert "DRY RUN" in dry.stdout and "slip holders to fold  2" in dry.stdout, dry.stdout
+        assert state() == (5, holder)
+
+        done = _run_cli("patch", str(SLIP_PATCH), "--apply", database_url=url)
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert "APPLIED" in done.stdout
+        assert state() == (3, real)
+        cur.execute("SELECT payment_id FROM payment_attachment WHERE attachment_id = %s", (next_slip,))
+        assert cur.fetchone()[0] == next_one, "with several real payments, the next one after the holder"
+        cur.execute("SELECT count(*) FROM attachment WHERE id = %s", (moved,))
+        assert cur.fetchone()[0] == 1, "the file's row stays; only its link moved"
+
+        again = _run_cli("patch", str(SLIP_PATCH), "--apply", database_url=url)
+        assert again.returncode == 0, again.stdout + again.stderr
+        assert "slip holders to fold  0" in again.stdout and state() == (3, real)
+        conn.close()
+    finally:
+        pg.drop_database(name)
