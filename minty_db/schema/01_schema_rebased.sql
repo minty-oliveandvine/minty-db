@@ -2634,30 +2634,39 @@ COMMENT ON VIEW pettycash_test.report_cash_summary IS
   'Replaces report.actual_cash_total. NULL actual_cash_total means the report '
   'was never cash-counted, which is not the same as counting zero.';
 
--- tracker: the per-entity activity summary that exists in production. tracker-backend
--- reads it (tracker_app.py), and its own tracker_view_v3.sql has three more columns
--- (pc_latest_submitted_date, country_code, timezone) than this one - DEFERRED until the
--- tracker is updated for this schema (2026-10-13); a rebuild from here breaks /api/tracker. Carried across so the schema swap does not
--- drop it, with two changes: report.company -> report.entity_id (the note below
--- always said so) and the module code 'BILL' -> 'PAYMENT_REQUEST' (item 20).
--- The bill vocabulary it filters on (paid / partially_paid / submitted /
--- published) is unchanged by item 18.
+-- tracker: the per-entity activity summary the client tracker reads (tracker-backend). Since
+-- 2026-11-10 (owner; minty-db v0.5) this is the tracker's own view, folded in from tracker-backend's
+-- tracker_view_v3.sql, which is retired: fifteen columns - pc_latest_submitted_date, country_code
+-- and timezone joined the twelve carried across - and archived companies (entities.archived_at)
+-- left out. Carried from production with two changes: report.company -> report.entity_id and the
+-- module code 'BILL' -> 'PAYMENT_REQUEST' (item 20). The bill vocabulary it filters on (paid /
+-- partially_paid / submitted / published) is unchanged by item 18. The counts and the two module
+-- flags are never NULL, as tracker_view_v3 had them. Databases already at 0001 get it from
+-- patches/2026-11-10_tracker_view.sql (after the archived patch).
 CREATE VIEW pettycash_test.tracker AS
 SELECT e.name AS "entities.name",
        e.id   AS entity_id,
-       EXISTS (SELECT 1 FROM pettycash_test.entity_function_map efm
+       COALESCE(EXISTS (SELECT 1 FROM pettycash_test.entity_function_map efm
                 JOIN pettycash_test.entity_function ef ON ef.id = efm.entity_function_id
-               WHERE efm.entity_id = e.id AND ef.function_code = 'PETTY_CASH' AND efm.is_enabled) AS pettycash,
-       EXISTS (SELECT 1 FROM pettycash_test.entity_function_map efm
+               WHERE efm.entity_id = e.id AND ef.function_code = 'PETTY_CASH' AND efm.is_enabled), false) AS pettycash,
+       COALESCE(EXISTS (SELECT 1 FROM pettycash_test.entity_function_map efm
                 JOIN pettycash_test.entity_function ef ON ef.id = efm.entity_function_id
-               WHERE efm.entity_id = e.id AND ef.function_code = 'PAYMENT_REQUEST' AND efm.is_enabled) AS billing,
+               WHERE efm.entity_id = e.id AND ef.function_code = 'PAYMENT_REQUEST' AND efm.is_enabled), false) AS billing,
        rpt.pc_latest_submitted,
+       rpt.pc_latest_submitted_date,
        rpt.pc_latest_published,
-       bil.num_paid, bil.num_partialpaid, bil.num_unpaid, bil.num_published,
-       bil.latest_bill_published, bil.latest_bill_update
+       COALESCE(bil.num_paid, 0)        AS num_paid,
+       COALESCE(bil.num_partialpaid, 0) AS num_partialpaid,
+       COALESCE(bil.num_unpaid, 0)      AS num_unpaid,
+       COALESCE(bil.num_published, 0)   AS num_published,
+       bil.latest_bill_published, bil.latest_bill_update,
+       e.country_code,
+       e.timezone
   FROM pettycash_test.entities e
   LEFT JOIN LATERAL (
         SELECT max(r.transaction_date) AS pc_latest_submitted,
+               (array_agg(r.created_at ORDER BY r.transaction_date DESC)
+                  FILTER (WHERE r.transaction_date IS NOT NULL))[1] AS pc_latest_submitted_date,
                max(r.transaction_date) FILTER (WHERE r.publishing_status = 'completed') AS pc_latest_published
           FROM pettycash_test.report r
          WHERE r.entity_id = e.id) rpt ON true
@@ -2669,7 +2678,8 @@ SELECT e.name AS "entities.name",
                max(b.updated_at) FILTER (WHERE b.published = 'published') AS latest_bill_published,
                greatest(max(b.updated_at), max(b.created_at))       AS latest_bill_update
           FROM pettycash_test.bill b
-         WHERE b.entity_id = e.id) bil ON true;
+         WHERE b.entity_id = e.id) bil ON true
+ WHERE e.archived_at IS NULL;
 
 -- entity_setup_summary: one row per company describing how far its setup has got.
 -- It existed only in Supabase (created by hand) until 2026-10-13; the code reads it now:

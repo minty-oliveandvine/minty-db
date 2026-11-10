@@ -976,6 +976,7 @@ class Tracker(models.Model):
     pettycash = models.BooleanField(null=True, blank=True)
     billing = models.BooleanField(null=True, blank=True)
     pc_latest_submitted = models.DateField(null=True, blank=True)
+    pc_latest_submitted_date = models.DateTimeField(null=True, blank=True)
     pc_latest_published = models.DateField(null=True, blank=True)
     num_paid = models.BigIntegerField(null=True, blank=True)
     num_partialpaid = models.BigIntegerField(null=True, blank=True)
@@ -983,6 +984,8 @@ class Tracker(models.Model):
     num_published = models.BigIntegerField(null=True, blank=True)
     latest_bill_published = models.DateTimeField(null=True, blank=True)
     latest_bill_update = models.DateTimeField(null=True, blank=True)
+    country_code = CharNField(max_length=2, null=True, blank=True)
+    timezone = models.CharField(max_length=30, null=True, blank=True)
 
     class Meta:
         managed = False

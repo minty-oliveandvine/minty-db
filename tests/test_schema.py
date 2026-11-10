@@ -515,6 +515,9 @@ def test_the_archived_patch_matches_a_fresh_build_and_its_down_patch_reverses_it
         assert cur.fetchone()[0] == 0
         done = _run_cli("patch", str(ARCHIVED_PATCH), "--apply", database_url=url)
         assert done.returncode == 0 and "APPLIED" in done.stdout, done.stdout + done.stderr
+        # the release order: the tracker view (which reads archived_at) comes back after it
+        tracker = _run_cli("patch", str(TRACKER_PATCH), "--apply", database_url=url)
+        assert tracker.returncode == 0, tracker.stdout + tracker.stderr
         got = _catalogue(conn)
         diff = {k: (expected[k] - got[k], got[k] - expected[k]) for k in expected if expected[k] != got[k]}
         assert not diff, diff
@@ -533,6 +536,162 @@ def test_the_archived_patch_matches_a_fresh_build_and_its_down_patch_reverses_it
 
         again = _run_cli("patch", str(ARCHIVED_PATCH), "--apply", database_url=url)
         assert again.returncode != 0 and "already in this schema" in again.stdout + again.stderr
+        conn.close()
+    finally:
+        pg.drop_database(name)
+
+
+TRACKER_PATCH = ROOT / "minty_db" / "schema" / "patches" / "2026-11-10_tracker_view.sql"
+TRACKER_DOWN = ROOT / "minty_db" / "schema" / "patches" / "2026-11-10_tracker_view_down.sql"
+TRACKER_COLUMNS = [
+    "entities.name",
+    "entity_id",
+    "pettycash",
+    "billing",
+    "pc_latest_submitted",
+    "pc_latest_submitted_date",
+    "pc_latest_published",
+    "num_paid",
+    "num_partialpaid",
+    "num_unpaid",
+    "num_published",
+    "latest_bill_published",
+    "latest_bill_update",
+    "country_code",
+    "timezone",
+]
+
+
+@postgres_only
+def test_the_tracker_view_patch_matches_a_fresh_build_and_leaves_archived_companies_out():
+    """2026-11-10 (owner): the client tracker's fifteen-column view, folded in from tracker-backend,
+    with no archived company. Down (twelve columns) then up lands on a fresh build; the counts and
+    module flags are never NULL; the patch refuses to run before the archived columns exist."""
+    import uuid
+
+    from minty_db.testing import pg
+
+    base = os.environ.get("MINTY_TEST_PG_DBNAME", "minty_test")
+    name = f"{base}_tracker"
+    try:
+        built = pg.build(name)
+        conn = pg.connect(built.uri)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET search_path = pettycashv3")
+        url = built.uri + "?schema=pettycashv3"
+        assert _run_cli("migrate", "--baseline", database_url=url).returncode == 0
+        expected = _catalogue(conn)
+
+        def columns():
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'tracker' "
+                "AND table_schema = 'pettycashv3' ORDER BY ordinal_position"
+            )
+            return [r[0] for r in cur.fetchall()]
+
+        assert columns() == TRACKER_COLUMNS
+        assert _run_cli("patch", str(TRACKER_DOWN), "--apply", database_url=url).returncode == 0
+        assert len(columns()) == 12
+        done = _run_cli("patch", str(TRACKER_PATCH), "--apply", database_url=url)
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert columns() == TRACKER_COLUMNS
+        got = _catalogue(conn)
+        diff = {k: (expected[k] - got[k], got[k] - expected[k]) for k in expected if expected[k] != got[k]}
+        assert not diff, diff
+
+        live, gone = uuid.uuid4(), uuid.uuid4()
+        cur.execute(
+            "INSERT INTO entities (id, name, timezone) VALUES (%s, 'Live', 'Asia/Hong_Kong'), (%s, 'Gone', NULL)",
+            (live, gone),
+        )
+        cur.execute("UPDATE entities SET archived_at = now() WHERE id = %s", (gone,))
+        cur.execute("SELECT entity_id, pettycash, billing, num_paid, num_unpaid, timezone FROM tracker")
+        assert cur.fetchall() == [(live, False, False, 0, 0, "Asia/Hong_Kong")]
+
+        again = _run_cli("patch", str(TRACKER_PATCH), "--apply", database_url=url)
+        assert again.returncode == 0, "re-runnable"
+        conn.close()
+    finally:
+        pg.drop_database(name)
+
+
+BILL_CONTACTS_PATCH = ROOT / "minty_db" / "schema" / "patches" / "2026-11-10_bill_contact_ids.sql"
+
+
+@postgres_only
+def test_the_bill_contact_repair_links_each_bill_to_a_supplier_row():
+    """2026-11-10 (owner): the load put Xero's ContactID in bill.contact_id. The repair links each such
+    bill by the Xero id, else by the supplier's name, else to a restored supplier row; a bill already
+    right is untouched; a dry run changes nothing; a second run finds nothing."""
+    import uuid
+
+    from minty_db.testing import pg
+
+    base = os.environ.get("MINTY_TEST_PG_DBNAME", "minty_test")
+    name = f"{base}_billcontacts"
+    try:
+        built = pg.build(name)
+        conn = pg.connect(built.uri)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET search_path = pettycashv3")
+        url = built.uri + "?schema=pettycashv3"
+        assert _run_cli("migrate", "--baseline", database_url=url).returncode == 0
+
+        entity = uuid.uuid4()
+        cur.execute("INSERT INTO entities (id, name, xero_org_id) VALUES (%s, 'Co', 'ORG')", (entity,))
+        by_id_guid, by_name_guid, lost_guid = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        cur.execute(
+            "INSERT INTO xero_contact_sync (entity_id, xero_contact_id, name) VALUES (%s, %s, 'Acme') RETURNING id",
+            (entity, str(by_id_guid)),
+        )
+        acme = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO xero_contact_sync (entity_id, xero_contact_id, name) VALUES (%s, 'other', "
+            "'Named Co') RETURNING id",
+            (entity,),
+        )
+        named = cur.fetchone()[0]
+
+        def bill(contact_id, contact_name):
+            cur.execute(
+                "INSERT INTO bill (entity_id, contact_id, contact_name) VALUES (%s, %s, %s) RETURNING id",
+                (entity, contact_id, contact_name),
+            )
+            return cur.fetchone()[0]
+
+        b_id, b_name, b_lost, b_ok = (
+            bill(by_id_guid, "Acme"),
+            bill(by_name_guid, " named co "),
+            bill(lost_guid, "Lost Ltd"),
+            bill(acme, "Acme"),
+        )
+
+        def contact(b):
+            cur.execute("SELECT contact_id FROM bill WHERE id = %s", (b,))
+            return cur.fetchone()[0]
+
+        dry = _run_cli("patch", str(BILL_CONTACTS_PATCH), database_url=url)
+        assert dry.returncode == 0 and "DRY RUN" in dry.stdout, dry.stdout + dry.stderr
+        assert contact(b_id) == by_id_guid
+
+        done = _run_cli("patch", str(BILL_CONTACTS_PATCH), "--apply", database_url=url)
+        assert done.returncode == 0 and "APPLIED" in done.stdout, done.stdout + done.stderr
+        assert (contact(b_id), contact(b_name), contact(b_ok)) == (acme, named, acme)
+        cur.execute("SELECT name, xero_contact_id FROM xero_contact_sync WHERE id = %s", (contact(b_lost),))
+        assert cur.fetchone() == ("Lost Ltd", str(lost_guid)), "a supplier row restored for it"
+        cur.execute(
+            "SELECT count(*) FROM bill b WHERE NOT EXISTS (SELECT 1 FROM xero_contact_sync c WHERE c.id = b.contact_id)"
+        )
+        assert cur.fetchone()[0] == 0
+
+        cur.execute("SELECT count(*) FROM xero_contact_sync")
+        before = cur.fetchone()[0]
+        again = _run_cli("patch", str(BILL_CONTACTS_PATCH), "--apply", database_url=url)
+        assert again.returncode == 0
+        cur.execute("SELECT count(*) FROM xero_contact_sync")
+        assert cur.fetchone()[0] == before, "a second run finds nothing"
         conn.close()
     finally:
         pg.drop_database(name)
