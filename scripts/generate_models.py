@@ -20,6 +20,9 @@ this. The rules it applies are the house conventions every API's copy used:
   database refuses a restricted delete itself).
 * a table whose ``updated_at`` a trigger moves -> ``UpdatedAtMixin``.
 * a view -> ``managed = False`` with its id-like first column as the primary key.
+* a generated column -> ``GeneratedField`` with the rule declared in ``GENERATED``; a deferrable
+  unique constraint -> ``deferrable=Deferrable.IMMEDIATE``; ``DB_ONLY_UNIQUE`` names the indexes
+  the model leaves to the database.
 """
 
 from __future__ import annotations
@@ -84,6 +87,7 @@ VIRTUAL_FKS = {
 # A partial unique index needs its condition as a Q. Keyed by index name, with the predicate
 # Postgres reports: if it changes (or a new partial index appears), the generator stops.
 PARTIAL_UNIQUE = {
+    "uq_account_module_default": ("is_default", "models.Q(is_default=True)"),
     "uq_bapm_one_default": ("is_default", "models.Q(is_default=True)"),
     "uq_ebax_entity_xero_account": (
         "((xero_account_id)::text <> ''::text)",
@@ -95,6 +99,61 @@ PARTIAL_UNIQUE = {
     ),
 }
 
+# Unique indexes only the database enforces, by name: the model carries no constraint for them.
+# The generator stops if one disappears, so the list never outlives the schema.
+DB_ONLY_UNIQUE = {
+    # account_template is the accounting team's catalogue (Xero optional, 2026-11-10): no API writes
+    # it, and its rules (NULLS NOT DISTINCT, a lower(btrim(name)) expression, the overlap trigger)
+    # have no portable Django form.
+    "uq_account_template_code",
+    "uq_account_template_role",
+    "uq_account_template_name",
+}
+
+# Generated columns (GENERATED ALWAYS ... STORED), by (table, column): the expression Postgres
+# reports, and the same rule as a Django expression, so the ORM never writes the column and a
+# SQLite unit run computes it too. If Postgres reports anything else, the generator stops.
+GENERATED = {
+    ("account_info", "class"): (
+        "\nCASE\n    WHEN (account_type IS NULL) THEN NULL::account_class\n"
+        "    WHEN (account_type = ANY (ARRAY['bank'::account_type, 'current'::account_type, 'fixed'::account_type, "
+        "'inventory'::account_type, 'noncurrent'::account_type, 'prepayment'::account_type])) "
+        "THEN 'asset'::account_class\n"
+        "    WHEN (account_type = ANY (ARRAY['current_liability'::account_type, 'liability'::account_type, "
+        "'term_liability'::account_type])) THEN 'liability'::account_class\n"
+        "    WHEN (account_type = 'equity'::account_type) THEN 'equity'::account_class\n"
+        "    WHEN (account_type = ANY (ARRAY['sales'::account_type, 'revenue'::account_type, "
+        "'other_income'::account_type])) THEN 'revenue'::account_class\n"
+        "    ELSE 'expense'::account_class\nEND",
+        "models.Case("
+        "models.When(account_type__isnull=True, then=models.Value(None)), "
+        'models.When(account_type__in=["bank", "current", "fixed", "inventory", "noncurrent", "prepayment"], '
+        'then=models.Value("asset")), '
+        'models.When(account_type__in=["current_liability", "liability", "term_liability"], '
+        'then=models.Value("liability")), '
+        'models.When(account_type="equity", then=models.Value("equity")), '
+        'models.When(account_type__in=["sales", "revenue", "other_income"], then=models.Value("revenue")), '
+        'default=models.Value("expense"))',
+    ),
+    ("account_info", "active_xero_link"): (
+        "\nCASE\n    WHEN (record_status = 'active'::record_status) THEN xero_account_link_id\n"
+        "    ELSE NULL::uuid\nEND",
+        'models.Case(models.When(record_status="active", then=models.F("xero_account_link_id")), '
+        "default=models.Value(None))",
+    ),
+    ("account_template", "is_system"): (
+        "COALESCE((pettycash_role = ANY (ARRAY['petty_cash'::pettycash_role, 'bank'::pettycash_role, "
+        "'director'::pettycash_role])), false)",
+        'models.Case(models.When(pettycash_role__in=["petty_cash", "bank", "director"], then=models.Value(True)), '
+        "default=models.Value(False))",
+    ),
+}
+
+# Field names where the column's own name can't be one, by (table, column). Django refuses a field
+# name ending in "_" (fields.E001, a system check), so a Python keyword can't take the usual
+# trailing underscore: it gets a name here, and the generator stops on any new one.
+FIELD_NAMES = {("account_info", "class"): "account_class"}
+
 # Default ordering an API relies on (``invoice.lines.all()`` in creation order).
 ORDERING = {"subscription_invoice_line": ("created_at",)}
 
@@ -103,9 +162,13 @@ def camel(name: str) -> str:
     return CLASS_NAMES.get(name) or "".join(p.capitalize() for p in name.split("_"))
 
 
-def pyname(column: str) -> str:
+def pyname(column: str, table: str | None = None) -> str:
+    if (table, column) in FIELD_NAMES:
+        return FIELD_NAMES[(table, column)]
     name = re.sub(r"\W", "_", column)
-    return name + "_" if keyword.iskeyword(name) else name
+    if keyword.iskeyword(name):
+        raise SystemExit(f"{table}.{column} is a Python keyword - give it a name in FIELD_NAMES")
+    return name
 
 
 def read_catalog(conn) -> dict:
@@ -114,7 +177,8 @@ def read_catalog(conn) -> dict:
         "columns": q("""select c.table_name, c.column_name, c.data_type, c.udt_name,
             c.character_maximum_length, c.numeric_precision, c.numeric_scale, c.is_nullable = 'YES',
             c.column_default, t.table_type = 'VIEW',
-            col_description(format('%%I.%%I', c.table_schema, c.table_name)::regclass, c.ordinal_position)
+            col_description(format('%%I.%%I', c.table_schema, c.table_name)::regclass, c.ordinal_position),
+            c.is_generated = 'ALWAYS', c.generation_expression
             from information_schema.columns c join information_schema.tables t using (table_schema, table_name)
             where c.table_schema = %(s)s order by c.table_name, c.ordinal_position"""),
         "pk": q("""select tc.table_name, kcu.column_name from information_schema.table_constraints tc
@@ -135,7 +199,9 @@ def read_catalog(conn) -> dict:
             where n.nspname = %(s)s group by t.typname order by t.typname"""),
         "unique": q("""select t.relname, i.relname,
             array(select a.attname from unnest(ix.indkey) k join pg_attribute a on a.attrelid = t.oid and a.attnum = k),
-            pg_get_expr(ix.indpred, ix.indrelid), ix.indexprs is not null
+            pg_get_expr(ix.indpred, ix.indrelid), ix.indexprs is not null, ix.indnullsnotdistinct,
+            exists(select 1 from pg_constraint k where k.conindid = ix.indexrelid and k.contype = 'u'
+                   and k.condeferrable)
             from pg_index ix join pg_class i on i.oid = ix.indexrelid join pg_class t on t.oid = ix.indrelid
             join pg_namespace n on n.oid = t.relnamespace
             where n.nspname = %(s)s and ix.indisunique and not ix.indisprimary order by t.relname, i.relname"""),
@@ -167,8 +233,24 @@ def default_kwarg(raw: str | None, data_type: str) -> str | None:
 
 
 def field_line(col, table_pk, fks, enums_len, view_key, unique_cols=frozenset()) -> tuple[str, str]:
-    (table, column, data_type, udt, char_len, num_p, num_s, nullable, default, is_view, _comment) = col
-    name = pyname(column)
+    (
+        table,
+        column,
+        data_type,
+        udt,
+        char_len,
+        num_p,
+        num_s,
+        nullable,
+        default,
+        is_view,
+        _comment,
+        generated,
+        _generation,
+    ) = col
+    name = pyname(column, table)
+    if generated:
+        return name, generated_field(col, name, enums_len)
     kw: list[str] = []
     single_pk = table_pk == [column]
     unique = column in unique_cols
@@ -235,6 +317,29 @@ def field_line(col, table_pk, fks, enums_len, view_key, unique_cols=frozenset())
     return name, f"{cls}({', '.join(kw)})"
 
 
+def generated_field(col, name, enums_len) -> str:
+    """A GENERATED ALWAYS column as ``GeneratedField``: the ORM never inserts or updates it."""
+    table, column, data_type, udt, nullable, generation = col[0], col[1], col[2], col[3], col[7], col[12]
+    declared = GENERATED.get((table, column))
+    if declared is None:
+        raise SystemExit(f"{table}.{column} is a generated column - add it to GENERATED")
+    if declared[0] != generation:
+        raise SystemExit(f"{table}.{column}'s expression changed to {generation!r} - update GENERATED")
+    null = ["null=True", "blank=True"] if nullable else []
+    if data_type == "USER-DEFINED":
+        out = f"PgEnumField({', '.join([repr(udt), f'max_length={enums_len[udt]}', *null])})"
+    elif data_type == "uuid":
+        out = f"models.UUIDField({', '.join(null)})"
+    elif data_type == "boolean":
+        out = f"models.BooleanField({', '.join(null)})"
+    else:
+        raise SystemExit(f"generated {table}.{column} is {data_type} - teach generated_field() about it")
+    kw = [f"expression={declared[1]}", f"output_field={out}", "db_persist=True"]
+    if name != column:
+        kw.append(f"db_column={column!r}")
+    return f"models.GeneratedField({', '.join(kw)})"
+
+
 def render(cat: dict) -> tuple[str, str]:
     pks: dict[str, list[str]] = defaultdict(list)
     for t, c in cat["pk"]:
@@ -255,7 +360,14 @@ def render(cat: dict) -> tuple[str, str]:
     # several columns or a condition -> Meta.constraints.
     unique_cols: dict[str, set] = defaultdict(set)
     constraints: dict[str, list] = defaultdict(list)
-    for table, index, cols, pred, is_expr in cat["unique"]:
+    deferrable: set = set()
+    for table, index, cols, pred, is_expr, nulls_not_distinct, is_deferrable in cat["unique"]:
+        if index in DB_ONLY_UNIQUE:
+            continue
+        if nulls_not_distinct:
+            raise SystemExit(f"{table}.{index} is NULLS NOT DISTINCT - teach the generator about it")
+        if is_deferrable:
+            deferrable.add(index)
         if is_expr:
             raise SystemExit(f"{table}.{index} is an expression index - teach the generator about it")
         if pred is not None:
@@ -266,7 +378,11 @@ def render(cat: dict) -> tuple[str, str]:
             unique_cols[table].add(cols[0])
         else:
             constraints[table].append((index, cols, None))
-    for name in set(PARTIAL_UNIQUE) - {i for _, i, _, p, _ in cat["unique"] if p is not None}:
+    for name in DB_ONLY_UNIQUE - {i for _, i, *_ in cat["unique"]}:
+        raise SystemExit(f"DB_ONLY_UNIQUE names {name}, which the schema no longer has")
+    for key in set(GENERATED) - {(c[0], c[1]) for c in cat["columns"] if c[11]}:
+        raise SystemExit(f"GENERATED names {key}, which is not a generated column")
+    for name in set(PARTIAL_UNIQUE) - {i for _, i, _, p, *_ in cat["unique"] if p is not None}:
         raise SystemExit(f"PARTIAL_UNIQUE names {name}, which the schema no longer has")
     for key in set(RELATED_NAMES) - set(fks):
         raise SystemExit(f"RELATED_NAMES names {key}, which is not a foreign key")
@@ -317,6 +433,8 @@ def render(cat: dict) -> tuple[str, str]:
             for index, cols, condition in constraints[table]:
                 fields = ", ".join(repr(names[c]) for c in cols)
                 cond = f", condition={condition}" if condition else ""
+                if index in deferrable:
+                    cond += ", deferrable=models.Deferrable.IMMEDIATE"
                 out.append(f"            models.UniqueConstraint(fields=[{fields}]{cond}, name={index!r}),")
             out.append("        ]")
 

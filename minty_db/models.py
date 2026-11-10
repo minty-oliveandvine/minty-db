@@ -12,6 +12,28 @@ from minty_db.fields import CharNField, PgEnumField, UpdatedAtMixin
 
 
 
+class AccountChangeLog(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    entity_id = models.UUIDField()
+    account = models.ForeignKey('AccountInfo', models.CASCADE, db_constraint=False, related_name='+')
+    batch_id = models.UUIDField()
+    kind = PgEnumField('record_change_kind', max_length=15)
+    before_code = models.CharField(max_length=10, null=True, blank=True)
+    before_name = models.CharField(max_length=150, null=True, blank=True)
+    before_type = PgEnumField('account_type', max_length=17, null=True, blank=True)
+    after_code = models.CharField(max_length=10, null=True, blank=True)
+    after_name = models.CharField(max_length=150, null=True, blank=True)
+    after_type = PgEnumField('account_type', max_length=17, null=True, blank=True)
+    merged_into = models.ForeignKey('AccountInfo', models.CASCADE, db_constraint=False, related_name='+', null=True, blank=True)
+    xero_org_id = models.CharField(max_length=36, null=True, blank=True)
+    xero_guid = models.CharField(max_length=36, null=True, blank=True)
+    changed_by = models.UUIDField(null=True, blank=True)
+    changed_at = models.DateTimeField(db_default=Now())
+
+    class Meta:
+        db_table = 'account_change_log'
+
+
 class AccountInfo(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+')
@@ -25,12 +47,72 @@ class AccountInfo(UpdatedAtMixin):
     bank_account_type = models.CharField(max_length=50, null=True, blank=True)
     description = models.CharField(max_length=255, null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
+    code = models.CharField(max_length=10, null=True, blank=True)
+    account_type = PgEnumField('account_type', max_length=17, null=True, blank=True)
+    account_class = models.GeneratedField(expression=models.Case(models.When(account_type__isnull=True, then=models.Value(None)), models.When(account_type__in=["bank", "current", "fixed", "inventory", "noncurrent", "prepayment"], then=models.Value("asset")), models.When(account_type__in=["current_liability", "liability", "term_liability"], then=models.Value("liability")), models.When(account_type="equity", then=models.Value("equity")), models.When(account_type__in=["sales", "revenue", "other_income"], then=models.Value("revenue")), default=models.Value("expense")), output_field=PgEnumField('account_class', max_length=9, null=True, blank=True), db_persist=True, db_column='class')
+    record_status = PgEnumField('record_status', max_length=8, db_default='active')
+    is_system = models.BooleanField(db_default=False)
+    source = PgEnumField('record_source', max_length=8, db_default='xero')
+    xero_account_link = models.ForeignKey('XeroAccount', models.DO_NOTHING, db_constraint=False, related_name='+', null=True, blank=True)
+    created_by = models.UUIDField(null=True, blank=True)
+    merged_into = models.ForeignKey('AccountInfo', models.DO_NOTHING, db_constraint=False, related_name='+', null=True, blank=True)
+    active_xero_link = models.GeneratedField(expression=models.Case(models.When(record_status="active", then=models.F("xero_account_link_id")), default=models.Value(None)), output_field=models.UUIDField(null=True, blank=True), db_persist=True)
 
     class Meta:
         db_table = 'account_info'
         constraints = [
+            models.UniqueConstraint(fields=['entity', 'active_xero_link'], deferrable=models.Deferrable.IMMEDIATE, name='uq_account_active_xero_link'),
             models.UniqueConstraint(fields=['entity', 'xero_account_id'], name='uq_account_entity_xero'),
+            models.UniqueConstraint(fields=['id', 'entity'], name='uq_account_id_entity'),
         ]
+
+
+class AccountMatchDraft(models.Model):
+    account = models.OneToOneField('AccountInfo', models.CASCADE, db_constraint=False, related_name='+', primary_key=True)
+    entity_id = models.UUIDField()
+    xero_account = models.ForeignKey('XeroAccount', models.CASCADE, db_constraint=False, related_name='+')
+    picked_by = models.UUIDField(null=True, blank=True)
+    picked_at = models.DateTimeField(db_default=Now())
+
+    class Meta:
+        db_table = 'account_match_draft'
+
+
+class AccountModule(UpdatedAtMixin):
+    account = models.ForeignKey('AccountInfo', models.CASCADE, db_constraint=False, related_name='+')
+    entity_id = models.UUIDField()
+    module_code = PgEnumField('module_code', max_length=15)
+    is_active = models.BooleanField(db_default=True)
+    is_default = models.BooleanField(db_default=False)
+    sort_order = models.IntegerField(db_default=0)
+    created_at = models.DateTimeField(db_default=Now())
+    pk = models.CompositePrimaryKey('account', 'module_code')
+
+    class Meta:
+        db_table = 'account_module'
+        constraints = [
+            models.UniqueConstraint(fields=['entity_id', 'module_code'], condition=models.Q(is_default=True), name='uq_account_module_default'),
+        ]
+
+
+class AccountTemplate(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    country_code = CharNField(max_length=2, null=True, blank=True)
+    business_type = PgEnumField('business_type', max_length=7, null=True, blank=True)
+    uses_sales_cash = models.BooleanField(null=True, blank=True)
+    code = models.CharField(max_length=10, null=True, blank=True)
+    name = models.CharField(max_length=150)
+    type = PgEnumField('account_type', max_length=17)
+    description = models.CharField(max_length=255, null=True, blank=True)
+    ticked_by_default = models.BooleanField(db_default=True)
+    pettycash_default = models.BooleanField(db_default=False)
+    payment_request_default = models.BooleanField(db_default=False)
+    pettycash_role = PgEnumField('pettycash_role', max_length=11, null=True, blank=True)
+    is_system = models.GeneratedField(expression=models.Case(models.When(pettycash_role__in=["petty_cash", "bank", "director"], then=models.Value(True)), default=models.Value(False)), output_field=models.BooleanField(null=True, blank=True), db_persist=True)
+    sort_order = models.IntegerField(db_default=0)
+
+    class Meta:
+        db_table = 'account_template'
 
 
 class Attachment(UpdatedAtMixin):
@@ -70,6 +152,7 @@ class Bill(UpdatedAtMixin):
     xero_account_code = models.CharField(max_length=20, db_default='')
     created_by = models.UUIDField(null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
+    published_contact_name = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
         db_table = 'bill'
@@ -116,6 +199,9 @@ class BillLine(UpdatedAtMixin):
     sort_order = models.IntegerField(db_default=0)
     note = models.TextField(db_default='')
     created_at = models.DateTimeField(db_default=Now())
+    account_id = models.UUIDField(null=True, blank=True)
+    published_account_code = models.CharField(max_length=10, null=True, blank=True)
+    published_account_name = models.CharField(max_length=150, null=True, blank=True)
 
     class Meta:
         db_table = 'bill_line'
@@ -179,6 +265,24 @@ class CashInfo(models.Model):
         ]
 
 
+class ContactChangeLog(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    entity_id = models.UUIDField()
+    contact = models.ForeignKey('XeroContactSync', models.CASCADE, db_constraint=False, related_name='+')
+    batch_id = models.UUIDField()
+    kind = PgEnumField('record_change_kind', max_length=15)
+    before_name = models.CharField(max_length=255, null=True, blank=True)
+    after_name = models.CharField(max_length=255, null=True, blank=True)
+    merged_into = models.ForeignKey('XeroContactSync', models.CASCADE, db_constraint=False, related_name='+', null=True, blank=True)
+    xero_org_id = models.CharField(max_length=36, null=True, blank=True)
+    xero_guid = models.CharField(max_length=36, null=True, blank=True)
+    changed_by = models.UUIDField(null=True, blank=True)
+    changed_at = models.DateTimeField(db_default=Now())
+
+    class Meta:
+        db_table = 'contact_change_log'
+
+
 class CountryInfo(models.Model):
     country_code = CharNField(max_length=2, primary_key=True)
     alpha3_code = CharNField(max_length=3, null=True, blank=True)
@@ -238,7 +342,14 @@ class Entity(UpdatedAtMixin):
     last_connected_at = models.DateTimeField(null=True, blank=True)
     last_accessed_at = models.DateTimeField(null=True, blank=True)
     last_accessed_by_user = models.ForeignKey('User', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archived_by_user = models.ForeignKey('User', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
+    xero_status = PgEnumField('xero_status', max_length=13, db_default='not_connected')
+    setup_mode = PgEnumField('setup_mode', max_length=5, null=True, blank=True)
+    xero_publish_from = models.DateField(null=True, blank=True)
+    business_type = PgEnumField('business_type', max_length=7, null=True, blank=True)
+    uses_sales_cash = models.BooleanField(null=True, blank=True)
 
     class Meta:
         db_table = 'entities'
@@ -627,6 +738,9 @@ class ReportExpense(models.Model):
     remarks = models.CharField(max_length=300, null=True, blank=True)
     description = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
+    published_account_code = models.CharField(max_length=10, null=True, blank=True)
+    published_account_name = models.CharField(max_length=150, null=True, blank=True)
+    published_contact_name = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
         db_table = 'report_expense'
@@ -939,6 +1053,28 @@ class UserToken(UpdatedAtMixin):
         db_table = 'user_token'
 
 
+class XeroAccount(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+')
+    xero_org_id = models.CharField(max_length=36)
+    xero_guid = models.CharField(max_length=36)
+    code = models.CharField(max_length=10, null=True, blank=True)
+    name = models.CharField(max_length=150)
+    xero_type = models.CharField(max_length=50)
+    xero_class = models.CharField(max_length=50, null=True, blank=True)
+    status = models.CharField(max_length=50, db_default='ACTIVE')
+    bank_account_number = models.CharField(max_length=50, null=True, blank=True)
+    bank_account_type = models.CharField(max_length=50, null=True, blank=True)
+    synced_at = models.DateTimeField(db_default=Now())
+
+    class Meta:
+        db_table = 'xero_account'
+        constraints = [
+            models.UniqueConstraint(fields=['entity', 'xero_org_id', 'xero_guid'], name='uq_xero_account_guid'),
+            models.UniqueConstraint(fields=['id', 'entity'], name='uq_xero_account_id_entity'),
+        ]
+
+
 class XeroBankTransaction(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     sync_report = models.ForeignKey('Report', models.CASCADE, db_constraint=False, related_name='+', null=True, blank=True)
@@ -1070,18 +1206,45 @@ class XeroBillSyncPayload(UpdatedAtMixin):
         db_table = 'xero_bill_sync_payload'
 
 
+class XeroContact(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+')
+    xero_org_id = models.CharField(max_length=36)
+    xero_guid = models.CharField(max_length=36)
+    name = models.CharField(max_length=255)
+    status = models.CharField(max_length=50, db_default='ACTIVE')
+    synced_at = models.DateTimeField(db_default=Now())
+
+    class Meta:
+        db_table = 'xero_contact'
+        constraints = [
+            models.UniqueConstraint(fields=['entity', 'xero_org_id', 'xero_guid'], name='uq_xero_contact_guid'),
+            models.UniqueConstraint(fields=['id', 'entity'], name='uq_xero_contact_id_entity'),
+        ]
+
+
 class XeroContactSync(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+', null=True, blank=True)
-    xero_contact_id = models.CharField(max_length=36)
+    xero_contact_id = models.CharField(max_length=36, null=True, blank=True)
     xero_org_id = models.CharField(max_length=36, null=True, blank=True)
     name = models.CharField(max_length=150)
     category = models.CharField(max_length=50, null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
+    is_supplier = models.BooleanField(db_default=True)
+    is_customer = models.BooleanField(db_default=False)
+    email = models.CharField(max_length=255, null=True, blank=True)
+    phone = models.CharField(max_length=50, null=True, blank=True)
+    record_status = PgEnumField('record_status', max_length=8, db_default='active')
+    source = PgEnumField('record_source', max_length=8, db_default='xero')
+    xero_contact_link = models.ForeignKey('XeroContact', models.DO_NOTHING, db_constraint=False, related_name='+', null=True, blank=True)
+    created_by = models.UUIDField(null=True, blank=True)
+    merged_into = models.ForeignKey('XeroContactSync', models.DO_NOTHING, db_constraint=False, related_name='+', null=True, blank=True)
 
     class Meta:
         db_table = 'xero_contact_sync'
         constraints = [
+            models.UniqueConstraint(fields=['id', 'entity'], name='uq_contact_id_entity'),
             models.UniqueConstraint(fields=['entity', 'xero_contact_id'], name='uq_xcs_entity_contact'),
         ]
 

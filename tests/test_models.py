@@ -59,3 +59,28 @@ def test_updated_at_moves_on_save():
 def test_enum_columns_are_postgres_enums():
     field = m.UserEntity._meta.get_field("role")
     assert field.db_type(connection) == ("entity_role" if connection.vendor == "postgresql" else "varchar(12)")
+
+
+def test_generated_columns_are_computed_and_never_written():
+    """Xero optional (2026-11-10): class, active_xero_link and is_system are GENERATED columns.
+    The ORM leaves them out of every INSERT and UPDATE (Postgres refuses a write) and reads the
+    value the database computed - on SQLite too, from the same rule."""
+    entity = _entity()
+    account = m.AccountInfo.objects.create(
+        entity_id=entity.id, type="EXPENSE", name="Rent", xero_code="469", account_type="expense", code="469"
+    )
+    account.refresh_from_db()
+    assert account.account_class == "expense" and account.active_xero_link is None
+    account.account_type = "bank"
+    account.save()
+    account.refresh_from_db()
+    assert account.account_class == "asset"
+
+    shared = m.AccountTemplate.objects.create(code="1000", name="Petty Cash", type="bank", pettycash_role="petty_cash")
+    shared.refresh_from_db()
+    assert shared.is_system is True
+    other = m.AccountTemplate.objects.create(
+        code="6990", name="Other Expense", type="expense", pettycash_role="discrepancy"
+    )
+    other.refresh_from_db()
+    assert other.is_system is False

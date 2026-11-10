@@ -29,6 +29,12 @@ _TYPES = {
 }
 
 
+def test_the_models_pass_djangos_system_checks():
+    """``runserver`` and ``manage.py check`` run these in every API; pytest does not. A field
+    named ``class_`` (a keyword plus "_") passed every test and failed every check (fields.E001)."""
+    call_command("check", "minty_db", fail_level="ERROR")
+
+
 @pytest.mark.django_db
 def test_migration_state_matches_the_models():
     """makemigrations has nothing to write: 0001's state is exactly models.py."""
@@ -66,7 +72,12 @@ def test_every_column_has_the_models_type():
                 if col not in db:
                     continue
                 data_type, udt, char_len, num_p, num_s = db[col]
-                want = f.target_field.db_type(connection) if f.is_relation else f.db_type(connection)
+                if f.is_relation:
+                    want = f.target_field.db_type(connection)
+                elif f.generated:  # GeneratedField's own db_type is its output field's internal type
+                    want = f.db_parameters(connection)["type"]
+                else:
+                    want = f.db_type(connection)
                 got = {
                     "character varying": f"varchar({char_len})",
                     "character": f"char({char_len})",
@@ -345,6 +356,183 @@ def test_the_slip_placeholder_patch_folds_each_holder_into_the_one_real_payment(
         again = _run_cli("patch", str(SLIP_PATCH), "--apply", database_url=url)
         assert again.returncode == 0, again.stdout + again.stderr
         assert "slip holders to fold  0" in again.stdout and state() == (3, real)
+        conn.close()
+    finally:
+        pg.drop_database(name)
+
+
+EXPAND_PATCH = ROOT / "minty_db" / "schema" / "patches" / "2026-11-10_xero_optional_expand.sql"
+EXPAND_DOWN = ROOT / "minty_db" / "schema" / "patches" / "2026-11-10_xero_optional_expand_down.sql"
+
+
+def _catalogue(conn) -> dict[str, set]:
+    """Everything a schema change can touch: columns (with defaults and generation rules),
+    constraints, indexes, triggers, functions and enum types."""
+    cur = conn.cursor()
+
+    def rows(sql):
+        cur.execute(sql)
+        return set(cur.fetchall())
+
+    return {
+        "columns": rows(
+            "SELECT table_name, column_name, data_type, udt_name, is_nullable, column_default, generation_expression "
+            "FROM information_schema.columns WHERE table_schema = 'pettycashv3'"
+        ),
+        "constraints": rows(
+            "SELECT c.relname, k.conname, pg_get_constraintdef(k.oid), k.condeferrable FROM pg_constraint k "
+            "LEFT JOIN pg_class c ON c.oid = k.conrelid WHERE k.connamespace = 'pettycashv3'::regnamespace"
+        ),
+        "indexes": rows("SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = 'pettycashv3'"),
+        "triggers": rows(
+            "SELECT c.relname, t.tgname, pg_get_triggerdef(t.oid) FROM pg_trigger t "
+            "JOIN pg_class c ON c.oid = t.tgrelid "
+            "WHERE NOT t.tgisinternal AND c.relnamespace = 'pettycashv3'::regnamespace"
+        ),
+        "functions": rows(
+            "SELECT proname, pg_get_function_identity_arguments(oid), md5(pg_get_functiondef(oid)) FROM pg_proc "
+            "WHERE pronamespace = 'pettycashv3'::regnamespace"
+        ),
+        "types": rows(
+            "SELECT t.typname, string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder) FROM pg_type t "
+            "JOIN pg_enum e ON e.enumtypid = t.oid WHERE t.typnamespace = 'pettycashv3'::regnamespace GROUP BY 1"
+        ),
+    }
+
+
+@postgres_only
+def test_the_xero_optional_patch_matches_a_fresh_build_and_its_down_patch_reverses_it():
+    """2026-11-10: the Xero-optional EXPAND is in the baseline (01's last section) and in a patch
+    for databases already at 0001. Down then up again lands exactly on a fresh build; the patch
+    fills the new columns from today's Xero-shaped rows; a second run stops at its guard; a dry
+    run changes nothing."""
+    import uuid
+
+    from minty_db.testing import pg
+
+    base = os.environ.get("MINTY_TEST_PG_DBNAME", "minty_test")
+    name = f"{base}_expand"
+    try:
+        built = pg.build(name)
+        conn = pg.connect(built.uri)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET search_path = pettycashv3")  # the catalogue prints names relative to it
+        url = built.uri + "?schema=pettycashv3"
+        assert _run_cli("migrate", "--baseline", database_url=url).returncode == 0
+        expected = _catalogue(conn)
+
+        down = _run_cli("patch", str(EXPAND_DOWN), "--apply", database_url=url)
+        assert down.returncode == 0, down.stdout + down.stderr
+        cur.execute("SELECT to_regclass('xero_account'), to_regtype('account_type')")
+        assert cur.fetchone() == (None, None)
+
+        entity, account, contact = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        cur.execute(
+            "INSERT INTO entities (id, name, status, xero_org_id) VALUES (%s, 'Co', 'connected', 'ORG')", (entity,)
+        )
+        cur.execute(
+            "INSERT INTO account_info (id, entity_id, type, name, xero_account_id, xero_code, status) "
+            "VALUES (%s, %s, 'EXPENSE', 'Rent', 'g-1', '469', 'ACTIVE')",
+            (account, entity),
+        )
+        cur.execute(
+            "INSERT INTO xero_contact_sync (id, entity_id, xero_contact_id, xero_org_id, name) "
+            "VALUES (%s, %s, 'c-1', 'ORG', 'Acme')",
+            (contact, entity),
+        )
+
+        dry = _run_cli("patch", str(EXPAND_PATCH), database_url=url)
+        assert dry.returncode == 0 and "DRY RUN" in dry.stdout, dry.stdout + dry.stderr
+        cur.execute("SELECT to_regclass('xero_account')")
+        assert cur.fetchone()[0] is None
+
+        done = _run_cli("patch", str(EXPAND_PATCH), "--apply", database_url=url)
+        assert done.returncode == 0 and "APPLIED" in done.stdout, done.stdout + done.stderr
+        got = _catalogue(conn)
+        diff = {k: (expected[k] - got[k], got[k] - expected[k]) for k in expected if expected[k] != got[k]}
+        assert not diff, diff  # (only in a fresh build, only after the patch)
+        cur.execute(
+            "SELECT code, account_type::text, class::text, record_status::text, xero_account_link_id IS NOT NULL "
+            "FROM account_info WHERE id = %s",
+            (account,),
+        )
+        assert cur.fetchone() == ("469", "expense", "expense", "active", True)
+        cur.execute("SELECT xero_contact_link_id IS NOT NULL FROM xero_contact_sync WHERE id = %s", (contact,))
+        assert cur.fetchone()[0] is True
+        cur.execute("SELECT xero_status::text, setup_mode::text FROM entities WHERE id = %s", (entity,))
+        assert cur.fetchone() == ("connected", "xero")
+
+        # A Minty-only company that goes live is written status 'disconnected' until CONTRACT
+        # (the only live value there is); it was never connected, and xero_status says so.
+        minty = uuid.uuid4()
+        cur.execute("INSERT INTO entities (id, name, setup_mode) VALUES (%s, 'Own books', 'minty')", (minty,))
+        cur.execute("UPDATE entities SET status = 'disconnected' WHERE id = %s", (minty,))
+        cur.execute("SELECT xero_status::text FROM entities WHERE id = %s", (minty,))
+        assert cur.fetchone()[0] == "not_connected"
+        cur.execute("UPDATE entities SET status = 'disconnected', xero_org_id = NULL WHERE id = %s", (entity,))
+        cur.execute("SELECT xero_status::text FROM entities WHERE id = %s", (entity,))
+        assert cur.fetchone()[0] == "disconnected", "a Xero company that disconnects stays disconnected"
+
+        again = _run_cli("patch", str(EXPAND_PATCH), "--apply", database_url=url)
+        assert again.returncode != 0 and "already in this schema" in again.stdout + again.stderr
+        conn.close()
+    finally:
+        pg.drop_database(name)
+
+
+ARCHIVED_PATCH = ROOT / "minty_db" / "schema" / "patches" / "2026-11-10_entity_archived.sql"
+ARCHIVED_DOWN = ROOT / "minty_db" / "schema" / "patches" / "2026-11-10_entity_archived_down.sql"
+
+
+@postgres_only
+def test_the_archived_patch_matches_a_fresh_build_and_its_down_patch_reverses_it():
+    """2026-11-10: entities.archived_at / archived_by_user_id are in the baseline (entities' CREATE
+    TABLE) and in a patch for databases at 0001. Down then up lands on a fresh build; the user FK
+    sets NULL when the archiver is deleted; a second run stops at its guard."""
+    import uuid
+
+    from minty_db.testing import pg
+
+    base = os.environ.get("MINTY_TEST_PG_DBNAME", "minty_test")
+    name = f"{base}_archived"
+    try:
+        built = pg.build(name)
+        conn = pg.connect(built.uri)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET search_path = pettycashv3")
+        url = built.uri + "?schema=pettycashv3"
+        assert _run_cli("migrate", "--baseline", database_url=url).returncode == 0
+        expected = _catalogue(conn)
+
+        down = _run_cli("patch", str(ARCHIVED_DOWN), "--apply", database_url=url)
+        assert down.returncode == 0, down.stdout + down.stderr
+        cur.execute(
+            "SELECT count(*) FROM information_schema.columns WHERE table_name = 'entities' "
+            "AND column_name LIKE 'archived%%'"
+        )
+        assert cur.fetchone()[0] == 0
+        done = _run_cli("patch", str(ARCHIVED_PATCH), "--apply", database_url=url)
+        assert done.returncode == 0 and "APPLIED" in done.stdout, done.stdout + done.stderr
+        got = _catalogue(conn)
+        diff = {k: (expected[k] - got[k], got[k] - expected[k]) for k in expected if expected[k] != got[k]}
+        assert not diff, diff
+
+        user, entity = uuid.uuid4(), uuid.uuid4()
+        cur.execute(
+            "INSERT INTO \"user\" (id, username, email, password) VALUES (%s, 'arch', 'arch@x.test', '!')", (user,)
+        )
+        cur.execute(
+            "INSERT INTO entities (id, name, archived_at, archived_by_user_id) VALUES (%s, 'Gone', now(), %s)",
+            (entity, user),
+        )
+        cur.execute('DELETE FROM "user" WHERE id = %s', (user,))
+        cur.execute("SELECT archived_at IS NOT NULL, archived_by_user_id FROM entities WHERE id = %s", (entity,))
+        assert cur.fetchone() == (True, None)
+
+        again = _run_cli("patch", str(ARCHIVED_PATCH), "--apply", database_url=url)
+        assert again.returncode != 0 and "already in this schema" in again.stdout + again.stderr
         conn.close()
     finally:
         pg.drop_database(name)

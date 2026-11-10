@@ -5,7 +5,7 @@
 
 from pathlib import Path
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 SCHEMA_SQL = Path(__file__).parent / "schema" / "01_schema_rebased.sql"
 CATALOGUE_SQL = Path(__file__).parent / "schema" / "seed_catalogue.sql"

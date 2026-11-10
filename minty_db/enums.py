@@ -3,6 +3,34 @@
 from django.db import models
 
 
+class AccountClass(models.TextChoices):
+    ASSET = 'asset'
+    LIABILITY = 'liability'
+    EQUITY = 'equity'
+    REVENUE = 'revenue'
+    EXPENSE = 'expense'
+
+
+class AccountType(models.TextChoices):
+    BANK = 'bank'
+    CURRENT = 'current'
+    FIXED = 'fixed'
+    INVENTORY = 'inventory'
+    NONCURRENT = 'noncurrent'
+    PREPAYMENT = 'prepayment'
+    CURRENT_LIABILITY = 'current_liability'
+    LIABILITY = 'liability'
+    TERM_LIABILITY = 'term_liability'
+    EQUITY = 'equity'
+    SALES = 'sales'
+    REVENUE = 'revenue'
+    OTHER_INCOME = 'other_income'
+    DIRECT_COSTS = 'direct_costs'
+    EXPENSE = 'expense'
+    OVERHEADS = 'overheads'
+    DEPRECIATION = 'depreciation'
+
+
 class AuditOutcome(models.TextChoices):
     SUCCEEDED = 'succeeded'
     ABORTED = 'aborted'
@@ -24,6 +52,13 @@ class BillStatus(models.TextChoices):
     PARTIALLY_PAID = 'partially_paid'
     PAID = 'paid'
     VOID = 'void'
+
+
+class BusinessType(models.TextChoices):
+    FNB = 'fnb'
+    RETAIL = 'retail'
+    SERVICE = 'service'
+    GENERAL = 'general'
 
 
 class CashType(models.TextChoices):
@@ -92,6 +127,14 @@ class PaymentStatus(models.TextChoices):
     FAILED = 'failed'
 
 
+class PettycashRole(models.TextChoices):
+    PETTY_CASH = 'petty_cash'
+    BANK = 'bank'
+    CASH_SALE = 'cash_sale'
+    DISCREPANCY = 'discrepancy'
+    DIRECTOR = 'director'
+
+
 class PublishState(models.TextChoices):
     DRAFT = 'draft'
     PUBLISHED = 'published'
@@ -105,6 +148,26 @@ class PublishStatus(models.TextChoices):
     FAILED = 'failed'
 
 
+class RecordChangeKind(models.TextChoices):
+    LINKED = 'linked'
+    OVERWRITTEN = 'overwritten'
+    MERGED = 'merged'
+    UNLINKED = 'unlinked'
+    ARCHIVED = 'archived'
+    CREATED_IN_XERO = 'created_in_xero'
+
+
+class RecordSource(models.TextChoices):
+    TEMPLATE = 'template'
+    XERO = 'xero'
+    USER = 'user'
+
+
+class RecordStatus(models.TextChoices):
+    ACTIVE = 'active'
+    ARCHIVED = 'archived'
+
+
 class ReportStatus(models.TextChoices):
     DRAFT = 'draft'
     SUBMITTED = 'submitted'
@@ -116,6 +179,11 @@ class SaleType(models.TextChoices):
     ELECTRONIC = 'electronic'
     DELIVERY = 'delivery'
     OTHER = 'other'
+
+
+class SetupMode(models.TextChoices):
+    MINTY = 'minty'
+    XERO = 'xero'
 
 
 class SubscriptionPhase(models.TextChoices):
@@ -153,3 +221,9 @@ class TransferStatus(models.TextChoices):
     DECLINED = 'declined'
     CANCELLED = 'cancelled'
     EXPIRED = 'expired'
+
+
+class XeroStatus(models.TextChoices):
+    NOT_CONNECTED = 'not_connected'
+    CONNECTED = 'connected'
+    DISCONNECTED = 'disconnected'
