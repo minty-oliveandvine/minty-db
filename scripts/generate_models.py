@@ -108,6 +108,10 @@ DB_ONLY_UNIQUE = {
     "uq_account_template_code",
     "uq_account_template_role",
     "uq_account_template_name",
+    # sale_info's owner rule (2026-11-12): lower(sale_name) among Minty's rows and within a company.
+    # Expression indexes; minty-petty-cash-api and minty-onboarding-api check the names themselves.
+    "uq_sale_info_minty_name",
+    "uq_sale_info_entity_name",
 }
 
 # Generated columns (GENERATED ALWAYS ... STORED), by (table, column): the expression Postgres

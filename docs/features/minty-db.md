@@ -58,6 +58,30 @@ Patches: `2026-11-03_xero_unique_keys.sql` applied 2026-11-03 on all four (owner
 
 `2026-11-10_tracker_view.sql` (also v0.5; owner, requested by the github-67 session): the client tracker's view, folded in from tracker-backend's retired `tracker_view_v3.sql` - fifteen columns (`pc_latest_submitted_date`, `country_code`, `timezone` added; the counts and module flags never NULL) and no archived company (`entities.archived_at IS NULL`). Run it after the archived patch (its guard says so); DROP + CREATE (a column can't be inserted mid-list); re-runnable. The archived `_down.sql` puts the twelve-column view back first, since the view reads `archived_at`. Owner-approved 2026-11-10; applied that day on local `postgres` only (snapshot `backups/pg/postgres_pretracker20261110.dump`; 83 companies on the tracker). Pinned by `test_the_tracker_view_patch_matches_a_fresh_build_and_leaves_archived_companies_out`.
 
+`2026-11-12_xero_matching.sql` (**v0.6**; Phase 3 of the Xero matching, owner-approved 2026-11-12):
+the enum `xero_matching` ('first','new_accounts','new_org','change') and `entities.xero_matching`
+(NULL = no matching open), set and cleared by minty-accounts-api. The patch marks `first` any company
+Phase 2 has mid-matching (keeps its books in Minty, an organisation recorded, own accounts). In the
+baseline (the schema file's last section); applied 2026-11-12 on local `postgres` only (87 companies,
+2 marked: My Company 2 and 3). Not applied on Supabase yet: every API pins v0.6 only after both
+Supabase schemas have it. Pinned by
+`test_the_xero_matching_patch_matches_a_fresh_build_backfills_and_its_down_patch_reverses_it`.
+
+`2026-11-12_sale_info_owner.sql` (**v0.7**; owner-approved 2026-11-12): `sale_info.entity_id` - who
+owns a sales method. NULL = Minty's catalogue (offered to every company; never renamed or deleted, a
+company only takes it off its own list); set = the company that typed it, its own to rename or
+delete. `UNIQUE (sale_name)` became two expression indexes, `lower(sale_name)` among Minty's rows
+and within a company (`DB_ONLY_UNIQUE`: the APIs check names themselves). The owner's backfill:
+Minty's are Visa, Mastercard, Alipay, WeChat Pay, UnionPay, Amex, Octopus, Payme, JCB, Food Panda,
+Keeta, OpenRice, Deliveroo and Cash; a case twin of one (MasterCard, PayMe, payme) merges into it
+(a company holding both keeps one link, a report holding both one row, summed); a row nobody uses
+goes; every other row is its company's own, a name several companies used split into one row each. **GCash moves to Electronic** (owner, 2026-11-12: a card and wallet payment, not delivery) - every
+company's row, so past reports count it there.
+Applied 2026-11-12 on local `postgres` only (3 twins merged, 9 copies, 14 Minty's, 53 companies'
+own). Not on Supabase yet: after v0.6, on the owner's yes. The down-patch folds the copies back and
+restores `UNIQUE (sale_name)`. Pinned by
+`test_the_sale_info_owner_patch_matches_a_fresh_build_backfills_and_its_down_patch_reverses_it`.
+
 `2026-11-10_bill_contact_ids.sql` (a DATA repair, no schema change; owner: "fix it"): the v2->v3 load wrote Xero's ContactID into `bill.contact_id`, which names a `xero_contact_sync` row, so loaded bills opened with no supplier picked. Each such bill is linked by the Xero id in its company, else by the supplier's name (case and spaces ignored), else to a restored supplier row; a bill of a company that no longer exists is left (no row can be made for it). Re-runnable; the before/after SELECTs are the report. Applied 2026-11-10 on local `postgres` only (snapshot `backups/pg/postgres_prebillcontacts20261110.dump`): 1,548 of 1,550 linked, the 2 left belong to the companies deleted on 2026-11-09 (Minty's SWITCH 2c-0). Minty's load runs the same statements at the end of 03 (`gen.py` `BILL_CONTACTS`, check R14; rehearsed ALL GREEN). Pinned by `test_the_bill_contact_repair_links_each_bill_to_a_supplier_row`.
 
 `pettycashv3` (and local `postgres`) also hold `sessions`, Flask-Session's table. It is outside the schema file and has no model; it goes with Flask's session cutover.

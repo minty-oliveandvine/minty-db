@@ -541,6 +541,208 @@ def test_the_archived_patch_matches_a_fresh_build_and_its_down_patch_reverses_it
         pg.drop_database(name)
 
 
+MATCHING_PATCH = ROOT / "minty_db" / "schema" / "patches" / "2026-11-12_xero_matching.sql"
+MATCHING_DOWN = ROOT / "minty_db" / "schema" / "patches" / "2026-11-12_xero_matching_down.sql"
+
+
+@postgres_only
+def test_the_xero_matching_patch_matches_a_fresh_build_backfills_and_its_down_patch_reverses_it():
+    """2026-11-12 (Phase 3, owner-approved): entities.xero_matching is in the baseline and in a patch
+    for databases at 0001. Down then up lands on a fresh build; the patch marks a company Phase 2 has
+    mid-matching 'first' and leaves the rest NULL; the type refuses any other value; a second run
+    stops at its guard."""
+    import uuid
+
+    from minty_db.testing import pg
+
+    base = os.environ.get("MINTY_TEST_PG_DBNAME", "minty_test")
+    name = f"{base}_matching"
+    try:
+        built = pg.build(name)
+        conn = pg.connect(built.uri)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET search_path = pettycashv3")
+        url = built.uri + "?schema=pettycashv3"
+        assert _run_cli("migrate", "--baseline", database_url=url).returncode == 0
+        expected = _catalogue(conn)
+
+        down = _run_cli("patch", str(MATCHING_DOWN), "--apply", database_url=url)
+        assert down.returncode == 0, down.stdout + down.stderr
+        mid, plain = uuid.uuid4(), uuid.uuid4()
+        cur.execute(
+            "INSERT INTO entities (id, name, setup_mode, xero_org_id) VALUES (%s, 'Mid', 'minty', 'org-1'), "
+            "(%s, 'Plain', 'minty', NULL)",
+            (mid, plain),
+        )
+        for entity in (mid, plain):
+            cur.execute(
+                "INSERT INTO account_info (id, entity_id, name, code, type, account_type, source) "
+                "VALUES (%s, %s, 'Rent', '469', 'EXPENSE', 'expense', 'user')",
+                (uuid.uuid4(), entity),
+            )
+        done = _run_cli("patch", str(MATCHING_PATCH), "--apply", database_url=url)
+        assert done.returncode == 0 and "APPLIED" in done.stdout, done.stdout + done.stderr
+        got = _catalogue(conn)
+        diff = {k: (expected[k] - got[k], got[k] - expected[k]) for k in expected if expected[k] != got[k]}
+        assert not diff, diff
+
+        cur.execute("SELECT id, xero_matching FROM entities WHERE id IN (%s, %s)", (mid, plain))
+        assert dict(cur.fetchall()) == {mid: "first", plain: None}
+        with pytest.raises(Exception, match="invalid input value"):
+            cur.execute("UPDATE entities SET xero_matching = 'later' WHERE id = %s", (mid,))
+
+        again = _run_cli("patch", str(MATCHING_PATCH), "--apply", database_url=url)
+        assert again.returncode != 0 and "already in this schema" in again.stdout + again.stderr
+        conn.close()
+    finally:
+        pg.drop_database(name)
+
+
+OWNER_PATCH = ROOT / "minty_db" / "schema" / "patches" / "2026-11-12_sale_info_owner.sql"
+OWNER_DOWN = ROOT / "minty_db" / "schema" / "patches" / "2026-11-12_sale_info_owner_down.sql"
+
+
+@postgres_only
+def test_the_sale_info_owner_patch_matches_a_fresh_build_backfills_and_its_down_patch_reverses_it():
+    """2026-11-12 (owner-approved): sale_info.entity_id is in the baseline and in a patch for
+    databases at 0001. Down then up lands on a fresh build, and the backfill does what the owner
+    chose: Minty's names stay Minty's, a case twin merges into Minty's row (a company holding both
+    keeps one link; a report holding both keeps one row, summed), an unused row goes, a typed name
+    becomes its company's own and a shared one is split per company. The name rules hold; a second
+    run stops at its guard; the down-patch folds the copies back and restores UNIQUE (sale_name)."""
+    import uuid
+
+    from minty_db.testing import pg
+
+    base = os.environ.get("MINTY_TEST_PG_DBNAME", "minty_test")
+    name = f"{base}_sale_owner"
+    try:
+        built = pg.build(name)
+        conn = pg.connect(built.uri)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET search_path = pettycashv3")
+        url = built.uri + "?schema=pettycashv3"
+        assert _run_cli("migrate", "--baseline", database_url=url).returncode == 0
+        expected = _catalogue(conn)
+
+        down = _run_cli("patch", str(OWNER_DOWN), "--apply", database_url=url)
+        assert down.returncode == 0, down.stdout + down.stderr
+        cur.execute("DELETE FROM sale_info")
+        a, b = uuid.uuid4(), uuid.uuid4()
+        cur.execute("INSERT INTO entities (id, name) VALUES (%s, 'A'), (%s, 'B')", (a, b))
+        ids = {}
+        for sale_name, kind in [
+            ("Mastercard", "electronic"),
+            ("MasterCard", "electronic"),
+            ("Payme", "electronic"),
+            ("PayMe", "electronic"),
+            ("Kpay", "electronic"),
+            ("Lone", "delivery"),
+            ("Gcash", "delivery"),
+            ("1", "electronic"),
+            ("Cash", "other"),
+        ]:
+            ids[sale_name] = uuid.uuid4()
+            cur.execute(
+                "INSERT INTO sale_info (id, sale_name, type) VALUES (%s, %s, %s)", (ids[sale_name], sale_name, kind)
+            )
+        links = [
+            (a, "Mastercard", True, 1),
+            (a, "MasterCard", False, 2),
+            (b, "MasterCard", True, 3),
+            (a, "Payme", False, 4),
+            (a, "PayMe", True, 5),
+            (a, "Kpay", True, 6),
+            (b, "Kpay", True, 7),
+            (b, "Lone", True, 8),
+            (b, "Gcash", True, 9),
+            (a, "Cash", True, 0),
+        ]
+        for entity, sale_name, on, order in links:
+            cur.execute(
+                "INSERT INTO entity_sale_setting (entity_id, sale_id, is_active, display_order) "
+                "VALUES (%s, %s, %s, %s)",
+                (entity, ids[sale_name], on, order),
+            )
+        ra, ra2, rb = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        cur.execute(
+            "INSERT INTO report (id, entity_id, transaction_date) VALUES "
+            "(%s, %s, '2026-11-01'), (%s, %s, '2026-11-02'), (%s, %s, '2026-11-01')",
+            (ra, a, ra2, a, rb, b),
+        )
+        for report, sale_name, amount in [
+            (ra, "Mastercard", 10),
+            (ra, "MasterCard", 5),
+            (rb, "MasterCard", 7),
+            (ra, "Kpay", 1),
+            (ra2, "Kpay", 2),
+            (rb, "Kpay", 3),
+        ]:
+            cur.execute(
+                "INSERT INTO report_sale (report_id, sale_id, amount) VALUES (%s, %s, %s)",
+                (report, ids[sale_name], amount),
+            )
+
+        done = _run_cli("patch", str(OWNER_PATCH), "--apply", database_url=url)
+        assert done.returncode == 0 and "APPLIED" in done.stdout, done.stdout + done.stderr
+        got = _catalogue(conn)
+        diff = {k: (expected[k] - got[k], got[k] - expected[k]) for k in expected if expected[k] != got[k]}
+        assert not diff, diff
+
+        cur.execute("SELECT type FROM sale_info WHERE sale_name = 'Gcash'")
+        assert cur.fetchone()[0] == "electronic"  # GCash is a card and wallet payment (owner, 2026-11-12)
+        cur.execute("DELETE FROM entity_sale_setting WHERE sale_id = %s", (ids["Gcash"],))
+        cur.execute("DELETE FROM sale_info WHERE sale_name = 'Gcash'")
+        cur.execute("SELECT sale_name, entity_id FROM sale_info ORDER BY sale_name, entity_id")
+        assert sorted(cur.fetchall(), key=str) == sorted(
+            [("Cash", None), ("Mastercard", None), ("Payme", None), ("Kpay", a), ("Kpay", b), ("Lone", b)], key=str
+        )
+        cur.execute(
+            "SELECT e.entity_id, s.sale_name, s.entity_id, e.is_active, e.display_order "
+            "FROM entity_sale_setting e JOIN sale_info s ON s.id = e.sale_id"
+        )
+        got_links = {(row[0], row[1]): row[2:] for row in cur.fetchall()}
+        assert got_links[(a, "Mastercard")] == (None, True, 1)  # both twins: one link, on, first place
+        assert got_links[(b, "Mastercard")] == (None, True, 3)
+        assert got_links[(a, "Payme")] == (None, True, 4)
+        assert got_links[(a, "Kpay")][0] == a and got_links[(b, "Kpay")][0] == b  # split per company
+        assert got_links[(b, "Lone")][0] == b
+        cur.execute(
+            "SELECT report_id, s.sale_name, s.entity_id, amount FROM report_sale r JOIN sale_info s ON s.id = r.sale_id"
+        )
+        got_sales = {(row[0], row[1]): (row[2], row[3]) for row in cur.fetchall()}
+        assert got_sales == {
+            (ra, "Mastercard"): (None, 15),
+            (rb, "Mastercard"): (None, 7),  # summed on the report holding both
+            (ra, "Kpay"): (a, 1),
+            (ra2, "Kpay"): (a, 2),
+            (rb, "Kpay"): (b, 3),
+        }
+
+        with pytest.raises(Exception, match="uq_sale_info_minty_name"):
+            cur.execute("INSERT INTO sale_info (sale_name, type) VALUES ('VISA', 'electronic'), ('visa', 'electronic')")
+        with pytest.raises(Exception, match="uq_sale_info_entity_name"):
+            cur.execute("INSERT INTO sale_info (sale_name, type, entity_id) VALUES ('KPAY', 'electronic', %s)", (a,))
+        cur.execute("INSERT INTO sale_info (sale_name, type, entity_id) VALUES ('Lone', 'delivery', %s)", (a,))
+
+        again = _run_cli("patch", str(OWNER_PATCH), "--apply", database_url=url)
+        assert again.returncode != 0 and "already in this schema" in again.stdout + again.stderr
+
+        back = _run_cli("patch", str(OWNER_DOWN), "--apply", database_url=url)
+        assert back.returncode == 0, back.stdout + back.stderr
+        cur.execute("SELECT sale_name, count(*) FROM sale_info GROUP BY sale_name ORDER BY sale_name")
+        assert all(n == 1 for _name, n in cur.fetchall())
+        cur.execute(
+            "SELECT count(*) FROM report_sale r JOIN sale_info s ON s.id = r.sale_id WHERE s.sale_name = 'Kpay'"
+        )
+        assert cur.fetchone()[0] == 3
+        conn.close()
+    finally:
+        pg.drop_database(name)
+
+
 TRACKER_PATCH = ROOT / "minty_db" / "schema" / "patches" / "2026-11-10_tracker_view.sql"
 TRACKER_DOWN = ROOT / "minty_db" / "schema" / "patches" / "2026-11-10_tracker_view_down.sql"
 TRACKER_COLUMNS = [

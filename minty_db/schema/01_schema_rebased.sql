@@ -2796,6 +2796,8 @@ CREATE TYPE pettycash_role AS ENUM ('petty_cash','bank','cash_sale','discrepancy
 CREATE TYPE record_change_kind AS ENUM
   ('linked','overwritten','merged','unlinked','archived','created_in_xero');
 CREATE TYPE business_type  AS ENUM ('fnb','retail','service','general');
+-- why a Xero matching is open (Phase 3, owner 2026-11-12); NULL on entities = none open
+CREATE TYPE xero_matching  AS ENUM ('first','new_accounts','new_org','change');
 
 -- Xero value -> Minty value (backfill and triggers; dropped in CONTRACT). SQL-standard bodies are
 -- stored parsed and PL/pgSQL bodies reach their schema through TG_TABLE_SCHEMA, so both survive
@@ -3086,7 +3088,10 @@ ALTER TABLE entities
   ADD COLUMN setup_mode  setup_mode  NULL,
   ADD COLUMN xero_publish_from DATE NULL,   -- the connect's choice: records dated earlier are never sent; NULL = all
   ADD COLUMN business_type   business_type NULL,   -- onboarding's two answers: the template set
-  ADD COLUMN uses_sales_cash BOOLEAN NULL;                     --   Auto Fill and Settings suggest from
+  ADD COLUMN uses_sales_cash BOOLEAN NULL,                     --   Auto Fill and Settings suggest from
+  -- an open matching of the company's accounts to Xero and why: a first connect, accounts added
+  -- while disconnected, a new organisation, or changing the matches; cleared at Finish
+  ADD COLUMN xero_matching xero_matching NULL;
 -- every company answers the cash question ("Not sure" = TRUE); business_type NULL = "None of these"
 -- (only the shared rows). Both NULL = onboarded before the questions
 
@@ -3100,6 +3105,17 @@ ALTER TABLE report_expense
   ADD COLUMN published_account_name VARCHAR(150) NULL,
   ADD COLUMN published_contact_name VARCHAR(255) NULL;
 ALTER TABLE bill ADD COLUMN published_contact_name VARCHAR(255) NULL;   -- bills follow contact_id
+
+-- sale_info: who owns a sales method (owner, 2026-11-12). NULL = Minty's catalogue, offered to every
+-- company and never renamed or deleted (a company only takes it off its own list); set = the company
+-- that typed it, its own to rename or delete. Names are unique among Minty's and within a company,
+-- case ignored (the old UNIQUE (sale_name) made every company share one row per typed name).
+ALTER TABLE sale_info
+  DROP CONSTRAINT sale_info_name_key,
+  ADD COLUMN entity_id UUID NULL,
+  ADD CONSTRAINT fk_sale_info_entity FOREIGN KEY (entity_id) REFERENCES entities (id) ON DELETE CASCADE;
+CREATE UNIQUE INDEX uq_sale_info_minty_name  ON sale_info (lower(sale_name)) WHERE entity_id IS NULL;
+CREATE UNIQUE INDEX uq_sale_info_entity_name ON sale_info (entity_id, lower(sale_name)) WHERE entity_id IS NOT NULL;
 
 -- triggers: keep the new columns in step while old code writes only the old ones
 CREATE FUNCTION account_info_fill() RETURNS trigger LANGUAGE plpgsql AS $$

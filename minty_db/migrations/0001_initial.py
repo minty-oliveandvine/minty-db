@@ -633,13 +633,24 @@ class Migration(migrations.Migration):
                             "type",
                             minty_db.fields.PgEnumField("sale_type", db_default="other", max_length=10),
                         ),
-                        ("sale_name", models.CharField(max_length=80, unique=True)),
+                        ("sale_name", models.CharField(max_length=80)),
                         ("value_name", models.CharField(blank=True, max_length=80, null=True)),
                         ("display_order", models.IntegerField(blank=True, null=True)),
                         ("enabled", models.BooleanField(db_default=True)),
                         (
                             "created_at",
                             models.DateTimeField(db_default=django.db.models.functions.datetime.Now()),
+                        ),
+                        (
+                            "entity",
+                            models.ForeignKey(
+                                blank=True,
+                                db_constraint=False,
+                                null=True,
+                                on_delete=django.db.models.deletion.CASCADE,
+                                related_name="+",
+                                to="minty_db.entity",
+                            ),
                         ),
                     ],
                     options={
@@ -3101,6 +3112,11 @@ class Migration(migrations.Migration):
                     model_name="entity",
                     name="xero_publish_from",
                     field=models.DateField(blank=True, null=True),
+                ),
+                migrations.AddField(
+                    model_name="entity",
+                    name="xero_matching",
+                    field=minty_db.fields.PgEnumField("xero_matching", blank=True, max_length=12, null=True),
                 ),
                 migrations.AddField(
                     model_name="entity",

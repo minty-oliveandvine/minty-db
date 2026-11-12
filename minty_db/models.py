@@ -350,6 +350,7 @@ class Entity(UpdatedAtMixin):
     xero_publish_from = models.DateField(null=True, blank=True)
     business_type = PgEnumField('business_type', max_length=7, null=True, blank=True)
     uses_sales_cash = models.BooleanField(null=True, blank=True)
+    xero_matching = PgEnumField('xero_matching', max_length=12, null=True, blank=True)
 
     class Meta:
         db_table = 'entities'
@@ -812,11 +813,12 @@ class RolePermission(models.Model):
 class SaleInfo(UpdatedAtMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4)
     type = PgEnumField('sale_type', max_length=10, db_default='other')
-    sale_name = models.CharField(max_length=80, unique=True)
+    sale_name = models.CharField(max_length=80)
     value_name = models.CharField(max_length=80, null=True, blank=True)
     display_order = models.IntegerField(null=True, blank=True)
     enabled = models.BooleanField(db_default=True)
     created_at = models.DateTimeField(db_default=Now())
+    entity = models.ForeignKey('Entity', models.CASCADE, db_constraint=False, related_name='+', null=True, blank=True)
 
     class Meta:
         db_table = 'sale_info'

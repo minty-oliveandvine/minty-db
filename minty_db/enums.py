@@ -223,6 +223,13 @@ class TransferStatus(models.TextChoices):
     EXPIRED = 'expired'
 
 
+class XeroMatching(models.TextChoices):
+    FIRST = 'first'
+    NEW_ACCOUNTS = 'new_accounts'
+    NEW_ORG = 'new_org'
+    CHANGE = 'change'
+
+
 class XeroStatus(models.TextChoices):
     NOT_CONNECTED = 'not_connected'
     CONNECTED = 'connected'
