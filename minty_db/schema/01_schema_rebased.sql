@@ -1252,6 +1252,11 @@ CREATE TABLE pettycash_test.entities (
   -- CONTRACT rebuilds it as ('onboarding','live').
   archived_at           TIMESTAMPTZ               NULL,
   archived_by_user_id   UUID                      NULL,   -- who archived it
+  -- Who holds the company's subscription (owner, 2026-11-13): its creator at first (onboarding),
+  -- moved by a handover, and the person confirming billing makes payer_user_id. Only they may
+  -- activate or change it; NULL = not assigned yet (view-only for everyone). Once billing is
+  -- confirmed it mirrors entity_module_subscription.payer_user_id.
+  subscriber_user_id    UUID                      NULL,
   created_at            TIMESTAMPTZ               NOT NULL DEFAULT now(),
   updated_at            TIMESTAMPTZ               NOT NULL DEFAULT now(),
   CONSTRAINT entities_pkey PRIMARY KEY (id),
@@ -1260,6 +1265,7 @@ CREATE TABLE pettycash_test.entities (
   CONSTRAINT fk_entities_conn_user FOREIGN KEY (connected_by_user_id) REFERENCES pettycash_test.user (id)              ON DELETE RESTRICT,
   CONSTRAINT fk_entities_last_user FOREIGN KEY (last_accessed_by_user_id) REFERENCES pettycash_test.user (id)          ON DELETE SET NULL,
   CONSTRAINT fk_entities_archived_user FOREIGN KEY (archived_by_user_id) REFERENCES pettycash_test.user (id)        ON DELETE SET NULL,
+  CONSTRAINT fk_entities_subscriber_user FOREIGN KEY (subscriber_user_id) REFERENCES pettycash_test.user (id)       ON DELETE SET NULL,
   CONSTRAINT chk_entities_fy_end_day   CHECK (financial_year_end_day   IS NULL
                                           OR financial_year_end_day   BETWEEN 1 AND 31),
   CONSTRAINT chk_entities_fy_end_month CHECK (financial_year_end_month IS NULL
@@ -1268,7 +1274,7 @@ CREATE TABLE pettycash_test.entities (
 
 -- There is no deferred ALTER here any more. It carried fk_user_current_entity,
 -- the other half of a user <-> entities cycle that no longer exists now that
--- user.current_entity_id is gone. `entities` still references `user` four
+-- user.current_entity_id is gone. `entities` still references `user` five
 -- times; nothing references back.
 
 -- 2.9 user_entity  (회원 ↔ 엔티티 멤버십 + 역할)

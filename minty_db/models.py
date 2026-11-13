@@ -344,6 +344,7 @@ class Entity(UpdatedAtMixin):
     last_accessed_by_user = models.ForeignKey('User', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
     archived_at = models.DateTimeField(null=True, blank=True)
     archived_by_user = models.ForeignKey('User', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
+    subscriber_user = models.ForeignKey('User', models.SET_NULL, db_constraint=False, related_name='+', null=True, blank=True)
     created_at = models.DateTimeField(db_default=Now())
     xero_status = PgEnumField('xero_status', max_length=13, db_default='not_connected')
     setup_mode = PgEnumField('setup_mode', max_length=5, null=True, blank=True)

@@ -91,6 +91,22 @@ type and every value. The patch stops with nothing changed when any line holds a
 is in, and development's services share production's data until the December cutover - apply it as
 minty-petty-cash-api's v0.8 build goes live. Flask's code still names `remarks` (owner: left as is;
 nothing runs it). Pinned by `test_the_expense_description_patch_keeps_every_remark_and_matches_a_fresh_build`.
+Applied 2026-11-13 on local `postgres` and `pettycashv3_data` only; **not yet on Supabase**
+(`pettycashv3` or `development`).
+
+`2026-11-13_entity_subscriber.sql` (**v0.9**; owner-approved 2026-11-13): `entities.subscriber_user_id`
+(UUID NULL, FK `fk_entities_subscriber_user` -> `user`, ON DELETE SET NULL) - who holds a company's
+subscription. Onboarding writes the creator, a handover moves it, and confirming billing makes that
+person `entity_module_subscription.payer_user_id`, which the column then mirrors. Only the subscriber
+may start a trial, activate, change modules or hand over (minty-subscription-api); NULL = not
+assigned, view-only for everyone. The patch copies an existing payer into the column; every other
+company stays NULL until assigned by hand (Minty's `scripts/schema_migration/subscribers.py`, the
+owner's list at the December load). Not re-runnable (a second run stops at the guard); the way back
+is its `_down.sql`. v0.9 contains v0.8, so a service on v0.9 needs BOTH patches in its database.
+Applied 2026-11-13 on local `postgres` (1 subscriber), `pettycashv3_data` (0), Supabase `pettycashv3`
+(3 payers copied, then 6 assigned by hand - 9 subscribers) and Supabase `development` (2). Old code
+ignores the column. Pinned by
+`test_the_subscriber_patch_matches_a_fresh_build_copies_the_payers_and_its_down_patch_reverses_it`.
 
 `2026-11-10_bill_contact_ids.sql` (a DATA repair, no schema change; owner: "fix it"): the v2->v3 load wrote Xero's ContactID into `bill.contact_id`, which names a `xero_contact_sync` row, so loaded bills opened with no supplier picked. Each such bill is linked by the Xero id in its company, else by the supplier's name (case and spaces ignored), else to a restored supplier row; a bill of a company that no longer exists is left (no row can be made for it). Re-runnable; the before/after SELECTs are the report. Applied 2026-11-10 on local `postgres` only (snapshot `backups/pg/postgres_prebillcontacts20261110.dump`): 1,548 of 1,550 linked, the 2 left belong to the companies deleted on 2026-11-09 (Minty's SWITCH 2c-0). Minty's load runs the same statements at the end of 03 (`gen.py` `BILL_CONTACTS`, check R14; rehearsed ALL GREEN). Pinned by `test_the_bill_contact_repair_links_each_bill_to_a_supplier_row`.
 

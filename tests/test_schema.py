@@ -963,3 +963,70 @@ def test_the_bill_contact_repair_links_each_bill_to_a_supplier_row():
         conn.close()
     finally:
         pg.drop_database(name)
+
+
+SUBSCRIBER_PATCH = ROOT / "minty_db" / "schema" / "patches" / "2026-11-13_entity_subscriber.sql"
+SUBSCRIBER_DOWN = ROOT / "minty_db" / "schema" / "patches" / "2026-11-13_entity_subscriber_down.sql"
+
+
+@postgres_only
+def test_the_subscriber_patch_matches_a_fresh_build_copies_the_payers_and_its_down_patch_reverses_it():
+    """2026-11-13 (owner-approved): entities.subscriber_user_id - who holds a company's
+    subscription - is in the baseline and in a patch for databases at 0001. Down then up lands on a
+    fresh build; the patch copies an existing payer and leaves every other company unassigned; the
+    user FK sets NULL; a second run stops at its guard."""
+    import uuid
+
+    from minty_db.testing import pg
+
+    base = os.environ.get("MINTY_TEST_PG_DBNAME", "minty_test")
+    name = f"{base}_subscriber"
+    try:
+        built = pg.build(name)
+        conn = pg.connect(built.uri)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET search_path = pettycashv3")
+        url = built.uri + "?schema=pettycashv3"
+        assert _run_cli("migrate", "--baseline", database_url=url).returncode == 0
+        expected = _catalogue(conn)
+
+        down = _run_cli("patch", str(SUBSCRIBER_DOWN), "--apply", database_url=url)
+        assert down.returncode == 0, down.stdout + down.stderr
+        cur.execute(
+            "SELECT count(*) FROM information_schema.columns WHERE table_name = 'entities' "
+            "AND column_name = 'subscriber_user_id'"
+        )
+        assert cur.fetchone()[0] == 0
+
+        payer, paid, unpaid = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        cur.execute(
+            "INSERT INTO \"user\" (id, username, email, password) VALUES (%s, 'payer', 'payer@x.test', '!')",
+            (payer,),
+        )
+        cur.execute("INSERT INTO entities (id, name) VALUES (%s, 'Paid'), (%s, 'Trial')", (paid, unpaid))
+        cur.execute(
+            "INSERT INTO entity_module_subscription (entity_id, function_code, phase, payer_user_id) "
+            "VALUES (%s, 'PETTY_CASH', 'active', %s), (%s, 'PETTY_CASH', 'trial', NULL)",
+            (paid, payer, unpaid),
+        )
+
+        done = _run_cli("patch", str(SUBSCRIBER_PATCH), "--apply", database_url=url)
+        assert done.returncode == 0 and "APPLIED" in done.stdout, done.stdout + done.stderr
+        got = _catalogue(conn)
+        diff = {k: (expected[k] - got[k], got[k] - expected[k]) for k in expected if expected[k] != got[k]}
+        assert not diff, diff
+
+        cur.execute("SELECT id, subscriber_user_id FROM entities WHERE id IN (%s, %s)", (paid, unpaid))
+        assert dict(cur.fetchall()) == {paid: payer, unpaid: None}
+
+        cur.execute("DELETE FROM entity_module_subscription WHERE entity_id = %s", (paid,))
+        cur.execute('DELETE FROM "user" WHERE id = %s', (payer,))
+        cur.execute("SELECT subscriber_user_id FROM entities WHERE id = %s", (paid,))
+        assert cur.fetchone()[0] is None
+
+        again = _run_cli("patch", str(SUBSCRIBER_PATCH), "--apply", database_url=url)
+        assert again.returncode != 0 and "already in this schema" in again.stdout + again.stderr
+        conn.close()
+    finally:
+        pg.drop_database(name)
