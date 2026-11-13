@@ -3106,6 +3106,12 @@ ALTER TABLE report_expense
   ADD COLUMN published_contact_name VARCHAR(255) NULL;
 ALTER TABLE bill ADD COLUMN published_contact_name VARCHAR(255) NULL;   -- bills follow contact_id
 
+-- report_expense: what a person types in a line's Description field lived in `remarks`, and the
+-- `description` beside it was never written (owner, 2026-11-13): the empty column goes and
+-- `remarks` takes its name, keeping VARCHAR(300)
+ALTER TABLE report_expense DROP COLUMN description;
+ALTER TABLE report_expense RENAME COLUMN remarks TO description;
+
 -- sale_info: who owns a sales method (owner, 2026-11-12). NULL = Minty's catalogue, offered to every
 -- company and never renamed or deleted (a company only takes it off its own list); set = the company
 -- that typed it, its own to rename or delete. Names are unique among Minty's and within a company,

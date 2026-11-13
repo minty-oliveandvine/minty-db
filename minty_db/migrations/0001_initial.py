@@ -1496,8 +1496,7 @@ class Migration(migrations.Migration):
                             "amount",
                             models.DecimalField(db_default=Decimal("0"), decimal_places=2, max_digits=14),
                         ),
-                        ("remarks", models.CharField(blank=True, max_length=300, null=True)),
-                        ("description", models.TextField(blank=True, null=True)),
+                        ("description", models.CharField(blank=True, max_length=300, null=True)),
                         (
                             "created_at",
                             models.DateTimeField(db_default=django.db.models.functions.datetime.Now()),

@@ -82,6 +82,16 @@ own). Not on Supabase yet: after v0.6, on the owner's yes. The down-patch folds 
 restores `UNIQUE (sale_name)`. Pinned by
 `test_the_sale_info_owner_patch_matches_a_fresh_build_backfills_and_its_down_patch_reverses_it`.
 
+`2026-11-13_expense_description.sql` (**v0.8**; owner, 2026-11-13): `report_expense.remarks` becomes
+`report_expense.description`. What a person types in an expense line's Description field always
+lived in `remarks` (VARCHAR(300)); the TEXT `description` beside it was never written (0 of 16,599
+lines on the 2026-11-04 copy of production), so it is dropped and `remarks` renamed, keeping its
+type and every value. The patch stops with nothing changed when any line holds a `description`.
+**Release order:** code before v0.8 reads `remarks` and fails on every expense line once the patch
+is in, and development's services share production's data until the December cutover - apply it as
+minty-petty-cash-api's v0.8 build goes live. Flask's code still names `remarks` (owner: left as is;
+nothing runs it). Pinned by `test_the_expense_description_patch_keeps_every_remark_and_matches_a_fresh_build`.
+
 `2026-11-10_bill_contact_ids.sql` (a DATA repair, no schema change; owner: "fix it"): the v2->v3 load wrote Xero's ContactID into `bill.contact_id`, which names a `xero_contact_sync` row, so loaded bills opened with no supplier picked. Each such bill is linked by the Xero id in its company, else by the supplier's name (case and spaces ignored), else to a restored supplier row; a bill of a company that no longer exists is left (no row can be made for it). Re-runnable; the before/after SELECTs are the report. Applied 2026-11-10 on local `postgres` only (snapshot `backups/pg/postgres_prebillcontacts20261110.dump`): 1,548 of 1,550 linked, the 2 left belong to the companies deleted on 2026-11-09 (Minty's SWITCH 2c-0). Minty's load runs the same statements at the end of 03 (`gen.py` `BILL_CONTACTS`, check R14; rehearsed ALL GREEN). Pinned by `test_the_bill_contact_repair_links_each_bill_to_a_supplier_row`.
 
 `pettycashv3` (and local `postgres`) also hold `sessions`, Flask-Session's table. It is outside the schema file and has no model; it goes with Flask's session cutover.

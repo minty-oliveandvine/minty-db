@@ -599,6 +599,72 @@ def test_the_xero_matching_patch_matches_a_fresh_build_backfills_and_its_down_pa
         pg.drop_database(name)
 
 
+DESCRIPTION_PATCH = ROOT / "minty_db" / "schema" / "patches" / "2026-11-13_expense_description.sql"
+DESCRIPTION_DOWN = ROOT / "minty_db" / "schema" / "patches" / "2026-11-13_expense_description_down.sql"
+
+
+@postgres_only
+def test_the_expense_description_patch_keeps_every_remark_and_matches_a_fresh_build():
+    """2026-11-13 (owner): report_expense.remarks becomes report_expense.description, the empty
+    `description` beside it dropped. Down then up lands on a fresh build and keeps each line's text;
+    a line holding a `description` stops the patch with nothing changed; a second run stops at its
+    guard."""
+    import uuid
+
+    from minty_db.testing import pg
+
+    base = os.environ.get("MINTY_TEST_PG_DBNAME", "minty_test")
+    name = f"{base}_expdesc"
+    try:
+        built = pg.build(name)
+        conn = pg.connect(built.uri)
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SET search_path = pettycashv3")
+        url = built.uri + "?schema=pettycashv3"
+        assert _run_cli("migrate", "--baseline", database_url=url).returncode == 0
+        expected = _catalogue(conn)
+        cur.execute(
+            "SELECT character_maximum_length FROM information_schema.columns "
+            "WHERE table_schema = 'pettycashv3' AND table_name = 'report_expense' AND column_name = 'description'"
+        )
+        assert cur.fetchone() == (300,)
+
+        down = _run_cli("patch", str(DESCRIPTION_DOWN), "--apply", database_url=url)
+        assert down.returncode == 0, down.stdout + down.stderr
+        entity, report, line, blank = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        cur.execute("INSERT INTO entities (id, name) VALUES (%s, 'Shop')", (entity,))
+        cur.execute(
+            "INSERT INTO report (id, entity_id, transaction_date) VALUES (%s, %s, '2026-11-13')", (report, entity)
+        )
+        cur.execute(
+            "INSERT INTO report_expense (id, report_id, item, remarks) VALUES (%s, %s, 'COGS', 'Lemon bottle'), "
+            "(%s, %s, 'COGS', NULL)",
+            (line, report, blank, report),
+        )
+
+        cur.execute("UPDATE report_expense SET description = 'x' WHERE id = %s", (blank,))
+        held = _run_cli("patch", str(DESCRIPTION_PATCH), "--apply", database_url=url)
+        assert held.returncode != 0 and "holds values" in held.stdout + held.stderr
+        cur.execute("SELECT remarks, description FROM report_expense WHERE id = %s", (blank,))
+        assert cur.fetchone() == (None, "x")
+        cur.execute("UPDATE report_expense SET description = NULL WHERE id = %s", (blank,))
+
+        done = _run_cli("patch", str(DESCRIPTION_PATCH), "--apply", database_url=url)
+        assert done.returncode == 0 and "APPLIED" in done.stdout, done.stdout + done.stderr
+        got = _catalogue(conn)
+        diff = {k: (expected[k] - got[k], got[k] - expected[k]) for k in expected if expected[k] != got[k]}
+        assert not diff, diff
+        cur.execute("SELECT id, description FROM report_expense WHERE report_id = %s", (report,))
+        assert dict(cur.fetchall()) == {line: "Lemon bottle", blank: None}
+
+        again = _run_cli("patch", str(DESCRIPTION_PATCH), "--apply", database_url=url)
+        assert again.returncode != 0 and "already renamed" in again.stdout + again.stderr
+        conn.close()
+    finally:
+        pg.drop_database(name)
+
+
 OWNER_PATCH = ROOT / "minty_db" / "schema" / "patches" / "2026-11-12_sale_info_owner.sql"
 OWNER_DOWN = ROOT / "minty_db" / "schema" / "patches" / "2026-11-12_sale_info_owner_down.sql"
 
